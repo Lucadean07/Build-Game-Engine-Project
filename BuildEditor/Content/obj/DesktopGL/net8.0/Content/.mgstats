@@ -1,0 +1,4 @@
+Source File,Dest File,Processor Type,Content Type,Source File Size,Dest File Size,Build Seconds
+"/Users/luca/RiderProjects/BuildEditor/BuildEditor/Content/DefaultFont.spritefont","/Users/luca/RiderProjects/BuildEditor/BuildEditor/Content/bin/DesktopGL/Content/DefaultFont.xnb","FontDescriptionProcessor","SpriteFontContent",2100,42330,0.072184
+"/Users/luca/RiderProjects/BuildEditor/BuildEditor/Content/GeometryTextures/Floor1text.png","/Users/luca/RiderProjects/BuildEditor/BuildEditor/Content/bin/DesktopGL/Content/GeometryTextures/Floor1text.xnb","TextureProcessor","Texture2DContent",908,16469,0.051958
+"/Users/luca/RiderProjects/BuildEditor/BuildEditor/Content/GeometryTextures/Stonewalltext.png","/Users/luca/RiderProjects/BuildEditor/BuildEditor/Content/bin/DesktopGL/Content/GeometryTextures/Stonewalltext.xnb","TextureProcessor","Texture2DContent",2462,16469,0.001621
