@@ -20,6 +20,18 @@
 /processorParam:TextureFormat=Compressed
 /build:DefaultFont.spritefont
 
+#begin GeometryTextures/CeilingTexture.png
+/importer:TextureImporter
+/processor:TextureProcessor
+/processorParam:ColorKeyColor=255,0,255,255
+/processorParam:ColorKeyEnabled=True
+/processorParam:GenerateMipmaps=False
+/processorParam:PremultiplyAlpha=True
+/processorParam:ResizeToPowerOfTwo=False
+/processorParam:MakeSquare=False
+/processorParam:TextureFormat=Color
+/build:GeometryTextures/CeilingTexture.png
+
 #begin GeometryTextures/Floor1text.png
 /importer:TextureImporter
 /processor:TextureProcessor
