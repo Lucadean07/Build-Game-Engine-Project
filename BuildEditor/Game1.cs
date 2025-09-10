@@ -2870,6 +2870,22 @@ namespace BuildEditor
                 height = Math.Max(MIN_HEIGHT, Math.Min(MAX_HEIGHT, height));
             }
 
+            // CRITICAL FIX: Initialize ALL vertex heights if none exist to prevent collision system auto-generation
+            if (sector.VertexHeights.Count == 0)
+            {
+                Console.WriteLine($"Initializing vertex heights for all {sector.Vertices.Count} vertices in sector {sector.Id}");
+                for (int i = 0; i < sector.Vertices.Count; i++)
+                {
+                    var vh = new VertexHeight
+                    {
+                        VertexIndex = i,
+                        FloorHeight = sector.FloorHeight,
+                        CeilingHeight = sector.CeilingHeight
+                    };
+                    sector.VertexHeights.Add(vh);
+                }
+            }
+
             var vertexHeight = sector.VertexHeights.FirstOrDefault(vh => vh.VertexIndex == vertexIndex);
             if (vertexHeight == null)
             {
@@ -5658,47 +5674,15 @@ namespace BuildEditor
         // Calculate slope height using Build engine method
         private float CalculateSlopeZ(Sector sector, float x, float y, bool isFloor)
         {
-            // If sector isn't marked as sloped, return flat geometry
-            if (!sector.HasSlopes)
-            {
-                return isFloor ? sector.FloorHeight : sector.CeilingHeight;
-            }
-            
-            // If sector has slopes but no vertex height data, calculate height using modern plane interpolation
             if (sector.VertexHeights.Count < 3)
             {
-                Console.WriteLine($"SLOPE: Sector {sector.Id} marked as sloped but missing vertex heights - using plane interpolation");
-                return CalculateModernSlopeHeight(sector, x, y, isFloor);
+                // Auto-generate vertex heights if not available
+                sector.GenerateSlopeVertexHeights(0f, 32f, 64f, 96f);
             }
             
-            // Use existing vertex height data for legacy Build engine compatibility
+            // Build engine slope calculation using vertex data - use direct calculation to avoid circular dependency
+            // This mimics the authentic Build engine getflorzofslope/getceilzofslope functions
             return CalculateLegacyInterpolation(new Vector2(x, y), sector, isFloor);
-        }
-        
-        // Modern slope calculation using existing SlopePlane system without modifying sector data
-        private float CalculateModernSlopeHeight(Sector sector, float x, float y, bool isFloor)
-        {
-            if (sector.Vertices.Count < 3)
-                return isFloor ? sector.FloorHeight : sector.CeilingHeight;
-            
-            // Try to use existing slope plane data first
-            SlopePlane slopePlane = isFloor ? sector.FloorPlane : sector.CeilingPlane;
-            
-            if (slopePlane != null)
-            {
-                // Use the stored slope plane for accurate collision
-                return slopePlane.GetZAt(x, y);
-            }
-            
-            // If no slope plane but sector is marked as sloped, try to generate one temporarily
-            var temporaryPlane = GetOrCreateSlopePlane(sector, isFloor);
-            if (temporaryPlane != null)
-            {
-                return temporaryPlane.GetZAt(x, y);
-            }
-            
-            // Fallback to flat geometry if no slope data available
-            return isFloor ? sector.FloorHeight : sector.CeilingHeight;
         }
         
         // Legacy interpolation calculation (avoids circular dependency with new slope plane system)
