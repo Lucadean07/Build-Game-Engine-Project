@@ -8,8 +8,10 @@
     <File>/Users/luca/RiderProjects/BuildEditor/BuildEditor/Content/GeometryTextures/CeilingTexture.png</File>
     <File>/Users/luca/RiderProjects/BuildEditor/BuildEditor/Content/GeometryTextures/Floor1text.png</File>
     <File>/Users/luca/RiderProjects/BuildEditor/BuildEditor/Content/GeometryTextures/Stonewalltext.png</File>
+    <File>/Users/luca/RiderProjects/BuildEditor/BuildEditor/Content/SpriteTextures/Dudeman.png</File>
   </SourceFiles>
   <DestFiles>
+    <File xsi:nil="true" />
     <File xsi:nil="true" />
     <File xsi:nil="true" />
     <File xsi:nil="true" />

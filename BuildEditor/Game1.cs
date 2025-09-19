@@ -1638,7 +1638,7 @@ namespace BuildEditor
 
 
             // Also check for sectors with matching HiTag (for lifts/elevators)
-            var linkedSectors = _sectors.Where(sector => sector.HiTag == sprite.LoTag && sprite.LoTag != 0).ToList();
+            var linkedSectors = _sectors.Where(sector => sector.HiTag == sprite.HiTag && sprite.HiTag != 0).ToList();
             Console.WriteLine($"Found {linkedSectors.Count} linked sectors");
 
             foreach (var sector in linkedSectors)
@@ -3724,8 +3724,8 @@ namespace BuildEditor
 
 
 
-            // R key to activate switches (test switch->door linking via HiTag)
-            if (keyboardState.IsKeyDown(Keys.R) && !_previousKeyboardState.IsKeyDown(Keys.R))
+            // C key to activate switches (test switch->door linking via HiTag)
+            if (keyboardState.IsKeyDown(Keys.C) && !_previousKeyboardState.IsKeyDown(Keys.C))
                 ActivateNearbyElements();
 
             // X key to deselect sprite in 3D mode (Escape exits program)
@@ -5112,17 +5112,22 @@ namespace BuildEditor
         private Vector2 CheckCircleCollisionWithSector(Vector2 fromPos, Vector2 movement, Sector sector)
         {
             if (sector.Vertices.Count < 3) return movement;
-            
+
+            // ONLY check collision for independent sectors - preserves nested sector portals
+            if (sector.SectorType != SectorType.Independent)
+                return movement;
+
             Vector2 toPos = fromPos + movement;
             Vector2 adjustedMovement = movement;
-            
-            // Check collision with each wall of the sector
+
+            // For independent sectors, ALWAYS check collision regardless of player position
+            // This ensures collision works from both inside and outside (both sides of walls)
             for (int i = 0; i < sector.Vertices.Count; i++)
             {
                 int nextIndex = (i + 1) % sector.Vertices.Count;
                 Vector2 wallStart = sector.Vertices[i];
                 Vector2 wallEnd = sector.Vertices[nextIndex];
-                
+
                 // Check if movement path intersects with this wall considering player radius
                 if (DoesCirclePathIntersectWall(fromPos, toPos, PLAYER_RADIUS, wallStart, wallEnd))
                 {
@@ -5130,15 +5135,15 @@ namespace BuildEditor
                     Vector2 wallVec = wallEnd - wallStart;
                     float wallLength = wallVec.Length();
                     Vector2 wallDir = wallLength > 0 ? wallVec / wallLength : Vector2.Zero;
-                    
+
                     // Project movement onto wall direction for sliding
                     float projectionLength = Vector2.Dot(adjustedMovement, wallDir);
                     adjustedMovement = wallDir * projectionLength;
-                    
+
                     break; // Handle one collision at a time
                 }
             }
-            
+
             return adjustedMovement;
         }
         
@@ -5398,17 +5403,21 @@ namespace BuildEditor
                 movement -= Vector3.Up * speed * deltaTime;
 
             // Apply movement with optional collision detection
-            if (_collisionMode && _hasPlayerPosition)
+            if (_collisionMode)
             {
                 // Calculate new 3D position
                 var newCameraPos = _camera3DPosition + movement;
                 var newPlayerPos = new Vector2(newCameraPos.X, -newCameraPos.Z);
-                
+
+                // Use current camera position as fallback if no player position is set
+                var currentPos = _hasPlayerPosition ? _playerPosition : new Vector2(_camera3DPosition.X, -_camera3DPosition.Z);
+
                 // Perform 3D collision detection
-                var collisionResult = PerformCollisionDetection3D(_playerPosition, newPlayerPos, _camera3DPosition.Y, newCameraPos.Y);
-                
+                var collisionResult = PerformCollisionDetection3D(currentPos, newPlayerPos, _camera3DPosition.Y, newCameraPos.Y);
+
                 // Update positions with collision adjustments
-                _playerPosition = new Vector2(collisionResult.X, collisionResult.Y);
+                if (_hasPlayerPosition)
+                    _playerPosition = new Vector2(collisionResult.X, collisionResult.Y);
                 _camera3DPosition = new Vector3(collisionResult.X, collisionResult.Z, -collisionResult.Y);
             }
             else
@@ -5459,11 +5468,29 @@ namespace BuildEditor
             HashSet<Sector> sectorsToCheck = new HashSet<Sector>();
             if (currentSector != null) sectorsToCheck.Add(currentSector);
             if (targetSector != null) sectorsToCheck.Add(targetSector);
+
+            // ALWAYS check independent sectors for collision, regardless of player position
+            // This fixes collision for independent sectors inside other sectors
+            foreach (var sector in _sectors)
+            {
+                if (sector.SectorType == SectorType.Independent)
+                {
+                    sectorsToCheck.Add(sector);
+                }
+            }
             
             foreach (var sector in sectorsToCheck)
             {
                 foreach (var wall in sector.Walls)
                 {
+                    // SKIP nested sector walls completely - they are portal walls with no collision
+                    if (sector.IsNested)
+                        continue;
+
+                    // SKIP portal walls (two-sided walls that connect sectors) - they should have no collision
+                    if (wall.IsTwoSided && wall.AdjacentSectorId.HasValue)
+                        continue;
+
                     // Check if wall blocks movement at this height
                     if (DoesWallBlockAtHeight(wall, oldPos2D, horizontalPos, resultPos.Z, currentSector))
                     {
@@ -5645,7 +5672,7 @@ namespace BuildEditor
             // Check if floor/ceiling are sloped (equivalent to Build engine stat & 1)
             bool floorSloped = sector.HasSlopes && sector.VertexHeights.Count > 0;
             bool ceilingSloped = sector.HasSlopes && sector.VertexHeights.Count > 0;
-            
+
             if (floorSloped)
             {
                 // Calculate floor height using Build engine slope math
@@ -5656,8 +5683,8 @@ namespace BuildEditor
                 // Flat floor
                 florz = sector.FloorHeight;
             }
-            
-            if (ceilingSloped) 
+
+            if (ceilingSloped)
             {
                 // Calculate ceiling height using Build engine slope math
                 ceilz = CalculateSlopeZ(sector, x, y, false); // false = ceiling
@@ -5667,8 +5694,15 @@ namespace BuildEditor
                 // Flat ceiling
                 ceilz = sector.CeilingHeight;
             }
-            
-            Console.WriteLine($"BUILD SLOPE: Sector {sector.Id} at ({x:F1},{y:F1}) -> Floor={florz:F1}, Ceiling={ceilz:F1} (sloped: floor={floorSloped}, ceiling={ceilingSloped})");
+
+            // ONLY apply animation offset for lifts that are actually animating
+            if (sector.IsLift && sector.IsAnimating)
+            {
+                florz += sector.AnimationHeightOffset;
+                ceilz += sector.AnimationHeightOffset;
+            }
+
+            Console.WriteLine($"BUILD SLOPE: Sector {sector.Id} at ({x:F1},{y:F1}) -> Floor={florz:F1}, Ceiling={ceilz:F1} (sloped: floor={floorSloped}, ceiling={ceilingSloped}, animated: {sector.IsLift && sector.IsAnimating})");
         }
         
         // Calculate slope height using Build engine method
@@ -7275,14 +7309,7 @@ namespace BuildEditor
                 GraphicsDevice.DrawUserPrimitives(PrimitiveType.LineList, vertices, 0, 4);
             }
 
-            // Draw additional visual feedback for sprite interaction - DISABLED
-            // if (_hoveredSprite3D != null && !_isDragging3DSprite)
-            // {
-            //     // Draw a circle around the hovered sprite position
-            //     var spriteWorldPos = Get3DSpriteWorldPosition(_hoveredSprite3D);
-            //     DrawSpriteBillboard(spriteWorldPos, _hoveredSprite3D.Height + 10f, Color.Magenta * 0.3f,
-            //         SpriteAlignment.Face);
-            // }
+        
         }
 
         private void DrawCircle(Vector2 center, float radius, Color color)
@@ -7764,6 +7791,28 @@ namespace BuildEditor
         Rising, // Lift is moving up  
         AtTop, // Lift is at highest position
         Lowering // Lift is moving down
+    }
+
+    // Level data container for save/load functionality
+    public class LevelData
+    {
+        public string Name { get; set; } = "Untitled Level";
+        public string Description { get; set; } = "";
+        public DateTime CreatedDate { get; set; } = DateTime.Now;
+        public DateTime ModifiedDate { get; set; } = DateTime.Now;
+        public string Version { get; set; } = "1.0";
+
+        // Level geometry and gameplay data
+        public List<Sector> Sectors { get; set; } = new List<Sector>();
+        public Vector2? PlayerPosition { get; set; } = null;
+        public bool HasPlayerPosition { get; set; } = false;
+
+        // Editor state
+        public int NextSectorId { get; set; } = 0;
+        public int NextSpriteId { get; set; } = 0;
+
+        // Level metadata
+        public Dictionary<string, object> Properties { get; set; } = new Dictionary<string, object>();
     }
 
 

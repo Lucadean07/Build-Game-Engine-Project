@@ -48,3 +48,4 @@
 /Users/luca/RiderProjects/BuildEditor/BuildEditor/bin/Debug/net8.0/Content/GeometryTextures/Stonewalltext.xnb
 /Users/luca/RiderProjects/BuildEditor/BuildEditor/obj/Debug/net8.0/BuildEditor.sourcelink.json
 /Users/luca/RiderProjects/BuildEditor/BuildEditor/bin/Debug/net8.0/Content/GeometryTextures/CeilingTexture.xnb
+/Users/luca/RiderProjects/BuildEditor/BuildEditor/bin/Debug/net8.0/Content/SpriteTextures/Dudeman.xnb
