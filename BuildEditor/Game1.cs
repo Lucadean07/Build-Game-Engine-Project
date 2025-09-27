@@ -1974,8 +1974,12 @@ namespace BuildEditor
             var wallEnd3D = new Vector3(wall.End.X, 0, -wall.End.Y);
             var wallDirection = Vector3.Normalize(wallEnd3D - wallStart3D);
 
-            // Wall normal (perpendicular to wall direction)
-            normal = Vector3.Cross(wallDirection, Vector3.Up);
+            // Wall normal (perpendicular to wall direction, pointing inward to sector)
+            // In Build Engine, sectors are wound counter-clockwise, so the inward normal
+            // is to the RIGHT of the wall direction vector
+            normal = Vector3.Cross(Vector3.Up, wallDirection); // Reversed cross product order for right-hand normal
+
+            // This should now point inward to the sector for counter-clockwise wound polygons
 
             // Create plane from wall
             var floorHeight = sector.FloorHeight + sector.AnimationHeightOffset;
@@ -2782,6 +2786,14 @@ namespace BuildEditor
                         sprite.Alignment = SpriteAlignment.Wall;
                         sprite.Height = _cursor3DPosition.Y - (_cursor3DSector?.FloorHeight ?? 0f);
 
+                        // Offset sprite slightly inward from wall surface to prevent clipping
+                        if (_cursor3DNormal != Vector3.Zero)
+                        {
+                            const float wallOffset = 2f; // Small offset inward from wall
+                            Vector3 offsetPosition = _cursor3DPosition + _cursor3DNormal * wallOffset;
+                            sprite.Position = new Vector2(offsetPosition.X, -offsetPosition.Z);
+                        }
+
                         // Set sprite angle to be parallel to the wall (like a picture frame)
                         if (_cursor3DWall != null)
                         {
@@ -2790,7 +2802,7 @@ namespace BuildEditor
                             sprite.Angle = (float)wallAngle; // Parallel to wall, not perpendicular
                         }
 
-                        Console.WriteLine($"Auto-aligned sprite to wall parallel with angle {sprite.Angle}");
+                        Console.WriteLine($"Auto-aligned sprite to wall parallel with angle {sprite.Angle}, offset inward");
                         break;
 
                     case "ceiling":
