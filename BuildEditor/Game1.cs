@@ -102,6 +102,8 @@ namespace BuildEditor
         private bool _playerSelected = false;
         private bool _draggingPlayer = false;
         private Vector2 _playerDragStart;
+        private bool _draggingSprite = false;
+        private Vector2 _spriteDragStart;
         
         // Collision system
         private bool _collisionMode = false;
@@ -911,11 +913,6 @@ namespace BuildEditor
 
             _spriteTagBox = new ComboView { Width = 120 };
             _spriteTagBox.Widgets.Add(new Label { Text = "Decoration", TextColor = Color.White });
-            _spriteTagBox.Widgets.Add(new Label { Text = "Enemy", TextColor = Color.Red });
-            _spriteTagBox.Widgets.Add(new Label { Text = "Pickup", TextColor = Color.Green });
-            _spriteTagBox.Widgets.Add(new Label { Text = "Trigger", TextColor = Color.Blue });
-            _spriteTagBox.Widgets.Add(new Label { Text = "Light", TextColor = Color.Yellow });
-            _spriteTagBox.Widgets.Add(new Label { Text = "Sound", TextColor = Color.Cyan });
             _spriteTagBox.Widgets.Add(new Label { Text = "Switch", TextColor = Color.Orange });
             _spriteTagBox.SelectedIndex = 0; // Default to Decoration
 
@@ -1426,9 +1423,35 @@ namespace BuildEditor
                 _selectedSprite.Alignment = (SpriteAlignment)_spriteAlignmentBox.SelectedIndex;
             }
 
-            if (_spriteTagBox.SelectedIndex >= 0 && _spriteTagBox.SelectedIndex < 8)
+            if (_spriteTagBox.SelectedIndex >= 0 && _spriteTagBox.SelectedIndex < 2)
             {
+                var oldTag = _selectedSprite.Tag;
                 _selectedSprite.Tag = (SpriteTag)_spriteTagBox.SelectedIndex;
+
+                // Auto-update LoTag based on tag functionality
+                if (oldTag != _selectedSprite.Tag)
+                {
+                    switch (_selectedSprite.Tag)
+                    {
+                        case SpriteTag.Switch:
+                            // Switches need LoTag to specify which doors/sectors to activate
+                            if (_selectedSprite.LoTag == 0)
+                            {
+                                _selectedSprite.LoTag = 1; // Default switch activation tag
+                                // Update UI to reflect the new LoTag
+                                if (_spriteLoTagBox != null)
+                                {
+                                    _isUpdatingSpriteUI = true;
+                                    _spriteLoTagBox.Text = _selectedSprite.LoTag.ToString();
+                                    _isUpdatingSpriteUI = false;
+                                }
+                            }
+                            break;
+                        case SpriteTag.Decoration:
+                            // Decorations don't need functional tags
+                            break;
+                    }
+                }
             }
 
             if (_spriteLoTagBox != null && int.TryParse(_spriteLoTagBox.Text, out int spriteLoTag))
@@ -1575,6 +1598,7 @@ namespace BuildEditor
                         lift.AnimationHeightOffset = heightDifference;
                         lift.LiftState = LiftState.AtTop;
                         lift.IsAnimating = false;
+                        lift.PlayerWasStandingOnLift = false; // Reset when lift stops
                     }
                     else
                     {
@@ -1590,6 +1614,7 @@ namespace BuildEditor
                         lift.AnimationHeightOffset = 0;
                         lift.LiftState = LiftState.AtBottom;
                         lift.IsAnimating = false;
+                        lift.PlayerWasStandingOnLift = false; // Reset when lift stops
                     }
                     else
                     {
@@ -1667,10 +1692,16 @@ namespace BuildEditor
                             case LiftState.AtBottom:
                                 Console.WriteLine("Starting lift rising");
                                 sector.LiftState = LiftState.Rising;
+                                // Check if player is standing on this lift
+                                sector.PlayerWasStandingOnLift = IsPlayerStandingOnSector(sector);
+                                Console.WriteLine($"Lift activation: Sector {sector.Id} (IsNested={sector.IsNested}), PlayerStandingOnLift={sector.PlayerWasStandingOnLift}");
                                 break;
                             case LiftState.AtTop:
                                 Console.WriteLine("Starting lift lowering");
                                 sector.LiftState = LiftState.Lowering;
+                                // Check if player is standing on this lift
+                                sector.PlayerWasStandingOnLift = IsPlayerStandingOnSector(sector);
+                                Console.WriteLine($"Lift activation: Sector {sector.Id} (IsNested={sector.IsNested}), PlayerStandingOnLift={sector.PlayerWasStandingOnLift}");
                                 break;
                             case LiftState.Rising:
                             case LiftState.Lowering:
@@ -1974,8 +2005,41 @@ namespace BuildEditor
             var wallEnd3D = new Vector3(wall.End.X, 0, -wall.End.Y);
             var wallDirection = Vector3.Normalize(wallEnd3D - wallStart3D);
 
-            // Wall normal (perpendicular to wall direction)
-            normal = Vector3.Cross(wallDirection, Vector3.Up);
+            // Wall normal (perpendicular to wall direction, pointing inward to sector)
+            // Calculate both possible normals
+            Vector3 normal1 = Vector3.Cross(wallDirection, Vector3.Up);
+            Vector3 normal2 = Vector3.Cross(Vector3.Up, wallDirection);
+
+            // Test both normals to see which one points inside the sector
+            Vector2 wallMidpoint2D = (wall.Start + wall.End) / 2f;
+
+            // Test points slightly inward from wall using each normal
+            Vector2 testPoint1 = wallMidpoint2D + new Vector2(normal1.X, normal1.Z) * 5f;
+            Vector2 testPoint2 = wallMidpoint2D + new Vector2(normal2.X, normal2.Z) * 5f;
+
+            // Use point-in-polygon test to see which point is inside the sector
+            bool point1Inside = IsPointInSector(testPoint1, sector);
+            bool point2Inside = IsPointInSector(testPoint2, sector);
+
+            // Choose the normal whose test point is inside the sector
+            // If both or neither are inside, fall back to camera direction
+            if (point1Inside && !point2Inside)
+            {
+                normal = normal1;
+            }
+            else if (point2Inside && !point1Inside)
+            {
+                normal = normal2;
+            }
+            else
+            {
+                // Fallback: choose based on camera direction
+                Vector3 wallMidpoint3D = (wallStart3D + wallEnd3D) / 2f;
+                Vector3 toCamera = Vector3.Normalize(_camera3DPosition - wallMidpoint3D);
+                float dot1 = Vector3.Dot(normal1, toCamera);
+                float dot2 = Vector3.Dot(normal2, toCamera);
+                normal = (dot1 > dot2) ? normal1 : normal2;
+            }
 
             // Create plane from wall
             var floorHeight = sector.FloorHeight + sector.AnimationHeightOffset;
@@ -2782,6 +2846,14 @@ namespace BuildEditor
                         sprite.Alignment = SpriteAlignment.Wall;
                         sprite.Height = _cursor3DPosition.Y - (_cursor3DSector?.FloorHeight ?? 0f);
 
+                        // Offset sprite slightly inward from wall surface to prevent clipping
+                        if (_cursor3DNormal != Vector3.Zero)
+                        {
+                            const float wallOffset = 2f; // Small offset inward from wall
+                            Vector3 offsetPosition = _cursor3DPosition + _cursor3DNormal * wallOffset;
+                            sprite.Position = new Vector2(offsetPosition.X, -offsetPosition.Z);
+                        }
+
                         // Set sprite angle to be parallel to the wall (like a picture frame)
                         if (_cursor3DWall != null)
                         {
@@ -2790,7 +2862,7 @@ namespace BuildEditor
                             sprite.Angle = (float)wallAngle; // Parallel to wall, not perpendicular
                         }
 
-                        Console.WriteLine($"Auto-aligned sprite to wall parallel with angle {sprite.Angle}");
+                        Console.WriteLine($"Auto-aligned sprite to wall parallel with angle {sprite.Angle}, offset inward");
                         break;
 
                     case "ceiling":
@@ -2923,7 +2995,7 @@ namespace BuildEditor
             if (_slopePlaneCache.ContainsKey(cacheKey))
             {
                 _slopePlaneCache.Remove(cacheKey);
-                Console.WriteLine($"DEBUG: Invalidated slope plane cache for sector {sectorId}, {(isFloor ? "floor" : "ceiling")}");
+                // Console.WriteLine($"DEBUG: Invalidated slope plane cache for sector {sectorId}, {(isFloor ? "floor" : "ceiling")}");
             }
         }
         
@@ -2932,7 +3004,7 @@ namespace BuildEditor
         {
             int cacheCount = _slopePlaneCache.Count;
             _slopePlaneCache.Clear();
-            Console.WriteLine($"DEBUG: Cleared {cacheCount} entries from slope plane cache");
+            // Console.WriteLine($"DEBUG: Cleared {cacheCount} entries from slope plane cache");
         }
         
         // Enhanced validation method for entire sectors
@@ -2991,7 +3063,7 @@ namespace BuildEditor
                 float.IsNaN(plane.DeltaX) || float.IsInfinity(plane.DeltaX) ||
                 float.IsNaN(plane.DeltaY) || float.IsInfinity(plane.DeltaY))
             {
-                Console.WriteLine($"ERROR: Invalid slope plane values for sector {sectorId} {(isFloor ? "floor" : "ceiling")}");
+                // Console.WriteLine($"ERROR: Invalid slope plane values for sector {sectorId} {(isFloor ? "floor" : "ceiling")}");
                 isValid = false;
             }
             
@@ -2999,7 +3071,7 @@ namespace BuildEditor
             float maxSlope = 10f; // Maximum slope of 10 units per world unit
             if (Math.Abs(plane.DeltaX) > maxSlope || Math.Abs(plane.DeltaY) > maxSlope)
             {
-                Console.WriteLine($"WARNING: Very steep slope detected for sector {sectorId} {(isFloor ? "floor" : "ceiling")} - dx:{plane.DeltaX}, dy:{plane.DeltaY}");
+                // Console.WriteLine($"WARNING: Very steep slope detected for sector {sectorId} {(isFloor ? "floor" : "ceiling")} - dx:{plane.DeltaX}, dy:{plane.DeltaY}");
             }
             
             return isValid;
@@ -4122,6 +4194,7 @@ namespace BuildEditor
                     _selectedVertices.Clear(); // Clear vertex selection
                     _selectedWall = null; // Clear wall selection
                     _spriteEditorVisible = false; // Hide sprite editor
+                    _draggingSprite = false; // Stop sprite dragging
                     return;
                 }
 
@@ -4133,6 +4206,11 @@ namespace BuildEditor
                     _selectedSector = null; // Clear sector selection
                     _selectedVertices.Clear(); // Clear vertex selection
                     _playerSelected = false; // Clear player selection
+                    _spriteEditorVisible = true; // Show sprite editor
+
+                    // Start sprite dragging
+                    _draggingSprite = true;
+                    _spriteDragStart = _mouseWorldPosition;
                     return;
                 }
 
@@ -4154,6 +4232,7 @@ namespace BuildEditor
                     _selectedSprite = null; // Clear sprite selection
                     _playerSelected = false; // Clear player selection
                     _spriteEditorVisible = false; // Hide sprite editor
+                    _draggingSprite = false; // Stop sprite dragging
                     return;
                 }
 
@@ -4240,6 +4319,15 @@ namespace BuildEditor
                 _playerDragStart = _mouseWorldPosition; // Update drag start for next frame
             }
 
+            // Handle sprite dragging
+            if (_draggingSprite && mouseState.LeftButton == ButtonState.Pressed && _selectedSprite != null)
+            {
+                // Calculate drag offset and move sprite
+                Vector2 dragOffset = _mouseWorldPosition - _spriteDragStart;
+                _selectedSprite.Position += dragOffset;
+                _spriteDragStart = _mouseWorldPosition; // Update drag start for next frame
+            }
+
             // End dragging
             if (_isDragging && mouseState.LeftButton == ButtonState.Released)
             {
@@ -4254,6 +4342,11 @@ namespace BuildEditor
             if (_draggingPlayer && mouseState.LeftButton == ButtonState.Released)
             {
                 _draggingPlayer = false;
+            }
+
+            if (_draggingSprite && mouseState.LeftButton == ButtonState.Released)
+            {
+                _draggingSprite = false;
             }
         }
 
@@ -4704,12 +4797,7 @@ namespace BuildEditor
             // If sprite doesn't have a specific texture, choose based on tag
             if (string.IsNullOrEmpty(textureName) || !_spriteTextures.ContainsKey(textureName))
             {
-                textureName = sprite.Tag switch
-                {
-                    SpriteTag.Enemy => "Enemy",
-                    SpriteTag.Pickup => "Pickup",
-                    _ => "Default"
-                };
+                textureName = "Default";
             }
 
             // Get the texture
@@ -4722,13 +4810,8 @@ namespace BuildEditor
                 // Tint color based on sprite tag for visibility
                 Color tintColor = sprite.Tag switch
                 {
-                    SpriteTag.Enemy => Color.White, // Enemy texture is already red
-                    SpriteTag.Pickup => Color.White, // Pickup texture is already green
-                    SpriteTag.Decoration => Color.Cyan,
-                    SpriteTag.Trigger => Color.Orange,
-                    SpriteTag.Light => Color.Yellow,
-                    SpriteTag.Sound => Color.Purple,
                     SpriteTag.Switch => Color.Magenta,
+                    SpriteTag.Decoration => Color.Cyan,
                     _ => Color.White
                 };
 
@@ -4745,13 +4828,8 @@ namespace BuildEditor
                 // Fallback to colored shapes if texture not found
                 Color fallbackColor = sprite.Tag switch
                 {
-                    SpriteTag.Enemy => Color.Red,
-                    SpriteTag.Pickup => Color.Green,
-                    SpriteTag.Decoration => Color.Cyan,
-                    SpriteTag.Trigger => Color.Orange,
-                    SpriteTag.Light => Color.Yellow,
-                    SpriteTag.Sound => Color.Purple,
                     SpriteTag.Switch => Color.Magenta,
+                    SpriteTag.Decoration => Color.Cyan,
                     _ => Color.White
                 };
 
@@ -5452,22 +5530,64 @@ namespace BuildEditor
         {
             // Start with desired position
             Vector3 resultPos = new Vector3(newPos2D.X, newPos2D.Y, newHeight);
-            
-            // Find current and target sectors
-            var currentSector = FindSectorContainingPoint(oldPos2D);
-            var targetSector = FindSectorContainingPoint(newPos2D);
-            
+
+            // Find current and target sectors BEFORE any collision processing
+            var currentSector = FindMostSpecificSector(oldPos2D);
+            var intendedTargetSector = FindMostSpecificSector(newPos2D);
+
+            // Only debug when there's actual movement
+            float movementDistance = Vector2.Distance(oldPos2D, newPos2D);
+            if (movementDistance > 0.01f) // Only show debug for meaningful movement
+            {
+                Console.WriteLine($"MOVEMENT DEBUG: From ({oldPos2D.X:F1},{oldPos2D.Y:F1}) sector {currentSector?.Id} to ({newPos2D.X:F1},{newPos2D.Y:F1}) sector {intendedTargetSector?.Id}");
+                Console.WriteLine($"MOVEMENT DISTANCE: {movementDistance:F3} units");
+
+                // Debug: List all sectors and their point containment
+                if (currentSector == intendedTargetSector)
+                {
+                    Console.WriteLine($"DEBUG: Both positions detected as same sector. Checking all sectors:");
+                    foreach (var sector in _sectors)
+                    {
+                        bool containsOld = IsPointInSector(oldPos2D, sector);
+                        bool containsNew = IsPointInSector(newPos2D, sector);
+                        Console.WriteLine($"  Sector {sector.Id} (Type={sector.SectorType}, IsNested={sector.IsNested}): Old={containsOld}, New={containsNew}");
+                    }
+                }
+            }
+
+            // Check height-based sector transition FIRST, before wall collision
+            if (currentSector != null && intendedTargetSector != null && currentSector != intendedTargetSector)
+            {
+                float currentFloorHeight = GetFloorHeight(oldPos2D, currentSector);
+                float targetFloorHeight = GetFloorHeight(newPos2D, intendedTargetSector);
+                float floorHeightDifference = Math.Abs(targetFloorHeight - currentFloorHeight);
+                const float maxStepHeight = 24f;
+
+                Console.WriteLine($"SECTOR TRANSITION: {currentSector.Id}→{intendedTargetSector.Id}, Heights: {currentFloorHeight}→{targetFloorHeight}, Diff: {floorHeightDifference}");
+
+                if (floorHeightDifference > maxStepHeight)
+                {
+                    Console.WriteLine($"BLOCKING MOVEMENT: Height difference {floorHeightDifference} > {maxStepHeight}");
+                    // Block the movement entirely - return to original position
+                    return new Vector3(oldPos2D.X, oldPos2D.Y, oldHeight);
+                }
+                else
+                {
+                    Console.WriteLine($"ALLOWING STEP: Height difference {floorHeightDifference} <= {maxStepHeight}");
+                }
+            }
+
             // If no sectors found, allow free movement
-            if (currentSector == null && targetSector == null)
+            if (currentSector == null && intendedTargetSector == null)
                 return resultPos;
-            
-            // Do horizontal collision (walls) first
+
+            // Do horizontal collision (walls) after height check
             Vector2 horizontalPos = new Vector2(resultPos.X, resultPos.Y);
             
             // Only check walls from sectors that might be relevant
             HashSet<Sector> sectorsToCheck = new HashSet<Sector>();
             if (currentSector != null) sectorsToCheck.Add(currentSector);
-            if (targetSector != null) sectorsToCheck.Add(targetSector);
+            if (intendedTargetSector != null) sectorsToCheck.Add(intendedTargetSector);
 
             // ALWAYS check independent sectors for collision, regardless of player position
             // This fixes collision for independent sectors inside other sectors
@@ -5479,19 +5599,36 @@ namespace BuildEditor
                 }
             }
             
+            // Build Engine style: Only check solid walls for collision, not portal walls
             foreach (var sector in sectorsToCheck)
             {
                 foreach (var wall in sector.Walls)
                 {
-                    // SKIP nested sector walls completely - they are portal walls with no collision
-                    if (sector.IsNested)
-                        continue;
-
                     // SKIP portal walls (two-sided walls that connect sectors) - they should have no collision
+                    // All sector transitions are handled by the height check above
                     if (wall.IsTwoSided && wall.AdjacentSectorId.HasValue)
                         continue;
 
-                    // Check if wall blocks movement at this height
+                    // For nested sectors, check height difference before applying wall collision
+                    if (sector.IsNested)
+                    {
+                        // Check if height difference allows stepping
+                        float currentFloorHeight = GetFloorHeight(oldPos2D, currentSector ?? sector);
+                        float nestedFloorHeight = GetFloorHeight(horizontalPos, sector);
+                        float heightDifference = Math.Abs(nestedFloorHeight - currentFloorHeight);
+
+                        if (heightDifference <= 24f) // Allow stepping
+                        {
+                            Console.WriteLine($"NESTED STEP: Height diff {heightDifference} <= 24, allowing step into sector {sector.Id}");
+                            continue; // Skip wall collision for this nested sector
+                        }
+                        else
+                        {
+                            Console.WriteLine($"NESTED WALL: Height diff {heightDifference} > 24, blocking step into sector {sector.Id}");
+                        }
+                    }
+
+                    // Only check solid walls for collision (non-portal walls)
                     if (DoesWallBlockAtHeight(wall, oldPos2D, horizontalPos, resultPos.Z, currentSector))
                     {
                         var pushResult = PushAwayFromWall(horizontalPos, wall, PLAYER_RADIUS);
@@ -5502,30 +5639,9 @@ namespace BuildEditor
             
             resultPos.X = horizontalPos.X;
             resultPos.Y = horizontalPos.Y;
-            
-            // Update target sector based on final horizontal position
-            // Find the most specific sector (including nested sectors)
+
+            // Find the final sector after wall collision (for vertical collision)
             var finalSector = FindMostSpecificSector(new Vector2(resultPos.X, resultPos.Y)) ?? currentSector;
-            
-            // Check if camera is in a pit and trying to move to adjacent sector with large height difference
-            if (currentSector != null && finalSector != null && currentSector != finalSector)
-            {
-                float currentFloorHeight = GetFloorHeight(oldPos2D, currentSector);
-                float targetFloorHeight = GetFloorHeight(new Vector2(resultPos.X, resultPos.Y), finalSector);
-                float heightDifference = Math.Abs(targetFloorHeight - currentFloorHeight);
-                
-                const float maxStepHeight = 5f; // Maximum step height
-                
-                // If camera is in a pit (nested sector) and trying to move to adjacent sector with large height diff
-                if (currentSector.IsNested && heightDifference > maxStepHeight)
-                {
-                    Console.WriteLine($"Pit wall collision: height difference too large ({heightDifference} units, max {maxStepHeight})");
-                    // Block horizontal movement - treat pit walls as solid
-                    resultPos.X = oldPos2D.X;
-                    resultPos.Y = oldPos2D.Y;
-                    finalSector = currentSector; // Stay in current sector (the pit)
-                }
-            }
             
             // Do vertical collision (floor/ceiling) using the final determined sector
             if (finalSector != null)
@@ -5537,12 +5653,37 @@ namespace BuildEditor
                 const float minFloorClearance = 8f; // Camera must be at least 8 units above floor
                 const float minCeilingClearance = 1f; // Camera must be at least 1 unit below ceiling
                 
-                // Don't allow going below floor + clearance
+                // Check if we need to step up or if it's too high (wall collision)
                 float minHeight = floorHeight + minFloorClearance;
                 if (resultPos.Z < minHeight)
                 {
-                    resultPos.Z = minHeight;
-                    Console.WriteLine($"Floor collision: Setting height to {resultPos.Z} (floor: {floorHeight})");
+                    float heightDifference = minHeight - resultPos.Z;
+
+                    Console.WriteLine($"Collision check: Sector {finalSector.Id}, Height diff: {heightDifference:F1}, IsLift: {finalSector.IsLift}, IsNested: {finalSector.IsNested}");
+
+                    // For lift sectors, only move player up if they were standing on the lift when it started moving
+                    if (finalSector.IsLift && !finalSector.PlayerWasStandingOnLift)
+                    {
+                        // Player wasn't on lift when it started - treat moving floor as wall (block horizontal movement)
+                        resultPos.X = oldPos2D.X;
+                        resultPos.Y = oldPos2D.Y;
+                        finalSector = currentSector; // Stay in original sector
+                        Console.WriteLine($"RESULT: Lift wall collision - Player wasn't standing on lift (Sector {finalSector.Id}, IsNested={finalSector.IsNested}) when it moved ({heightDifference} units), blocking horizontal movement");
+                    }
+                    else if (ShouldBlockMovementAsWall(finalSector, heightDifference))
+                    {
+                        // Too high to step - block horizontal movement entirely (treat as solid wall)
+                        resultPos.X = oldPos2D.X;
+                        resultPos.Y = oldPos2D.Y;
+                        finalSector = currentSector; // Stay in original sector
+                        Console.WriteLine($"RESULT: Wall collision - Height difference too large ({heightDifference} units, blocking horizontal movement)");
+                    }
+                    else
+                    {
+                        // Small enough to step up, or player was on lift when it started moving
+                        resultPos.Z = minHeight;
+                        Console.WriteLine($"RESULT: Step up - Setting height to {resultPos.Z} (floor: {floorHeight}, step height: {heightDifference})");
+                    }
                 }
                     
                 // Don't allow going above ceiling - clearance
@@ -5695,14 +5836,20 @@ namespace BuildEditor
                 ceilz = sector.CeilingHeight;
             }
 
-            // ONLY apply animation offset for lifts that are actually animating
-            if (sector.IsLift && sector.IsAnimating)
+            // Apply animation offset for any sector that has an offset (including lifts at rest position)
+            if (Math.Abs(sector.AnimationHeightOffset) > 0.01f)
             {
                 florz += sector.AnimationHeightOffset;
-                ceilz += sector.AnimationHeightOffset;
+
+                // For lifts, only move the floor (Duke Nukem style)
+                // For other animations (sliding doors), move both floor and ceiling
+                if (!sector.IsLift)
+                {
+                    ceilz += sector.AnimationHeightOffset;
+                }
             }
 
-            Console.WriteLine($"BUILD SLOPE: Sector {sector.Id} at ({x:F1},{y:F1}) -> Floor={florz:F1}, Ceiling={ceilz:F1} (sloped: floor={floorSloped}, ceiling={ceilingSloped}, animated: {sector.IsLift && sector.IsAnimating})");
+            // Console.WriteLine($"BUILD SLOPE: Sector {sector.Id} at ({x:F1},{y:F1}) -> Floor={florz:F1}, Ceiling={ceilz:F1} (sloped: floor={floorSloped}, ceiling={ceilingSloped}, animated: {sector.IsLift && sector.IsAnimating})");
         }
         
         // Calculate slope height using Build engine method
@@ -5858,11 +6005,170 @@ namespace BuildEditor
             return florz;
         }
         
-        // Get ceiling height at specific position - Build engine style  
+        // Get ceiling height at specific position - Build engine style
         private float GetCeilingHeight(Vector2 position, Sector sector)
         {
             GetZsOfSlope(sector, position.X, position.Y, out float ceilz, out float florz);
             return ceilz;
+        }
+
+        // Check if player is currently standing on the given sector
+        private bool IsPlayerStandingOnSector(Sector sector)
+        {
+            if (!_hasPlayerPosition) return false;
+
+            Vector2 playerPos = _playerPosition;
+
+            // Check if player is within this sector
+            if (!IsPointInSector(playerPos, sector)) return false;
+
+            // Check if player height is close to the sector floor
+            float sectorFloorHeight = GetFloorHeight(playerPos, sector);
+            float playerHeight = _camera3DPosition.Y;
+
+            // Player is standing on sector if they're within a reasonable distance above the floor
+            const float standingThreshold = 12f; // Within 12 units of floor = standing on it
+            return Math.Abs(playerHeight - sectorFloorHeight) <= standingThreshold;
+        }
+
+
+
+
+        // Check if player is getting too close to a wall collision boundary and apply gentle resistance
+        private Vector2 CheckWallCollisionProximity(Vector2 position, Sector currentSector)
+        {
+            const float warningDistance = 4f; // Distance from boundary to start applying resistance
+            Vector2 adjustedPosition = position;
+
+            // Check all nested sectors for boundary proximity
+            foreach (var nestedSector in _sectors.Where(s => s.IsNested))
+            {
+                float distanceToBoundary = GetDistanceToSectorBoundary(position, nestedSector);
+
+                if (distanceToBoundary <= warningDistance)
+                {
+                    bool isInsideNested = IsPointInSector(position, nestedSector);
+
+                    if (!isInsideNested && currentSector != null)
+                    {
+                        // Approaching nested sector from outside
+                        float currentFloorHeight = GetFloorHeight(position, currentSector);
+                        float nestedFloorHeight = GetFloorHeight(position, nestedSector);
+                        float heightDifference = Math.Abs(nestedFloorHeight - currentFloorHeight);
+
+                        if (ShouldBlockMovementAsWall(currentSector, heightDifference))
+                        {
+                            // Push away from the nested sector boundary
+                            Vector2 nestedCenter = Vector2.Zero;
+                            foreach (var vertex in nestedSector.Vertices)
+                                nestedCenter += vertex;
+                            nestedCenter /= nestedSector.Vertices.Count;
+
+                            Vector2 pushDirection = Vector2.Normalize(position - nestedCenter);
+                            float pushStrength = (warningDistance - distanceToBoundary) / warningDistance;
+                            adjustedPosition += pushDirection * pushStrength * 2f; // Stronger push away from nested sector
+                        }
+                    }
+                    else if (isInsideNested && currentSector == nestedSector)
+                    {
+                        // Inside nested sector trying to exit
+                        var parentSector = _sectors.FirstOrDefault(s => !s.IsNested && IsPointInSector(position, s));
+                        if (parentSector != null)
+                        {
+                            float nestedFloorHeight = GetFloorHeight(position, nestedSector);
+                            float parentFloorHeight = GetFloorHeight(position, parentSector);
+                            float heightDifference = Math.Abs(parentFloorHeight - nestedFloorHeight);
+
+                            if (ShouldBlockMovementAsWall(nestedSector, heightDifference))
+                            {
+                                // Push back toward center of nested sector (keep in pit)
+                                Vector2 nestedCenter = Vector2.Zero;
+                                foreach (var vertex in nestedSector.Vertices)
+                                    nestedCenter += vertex;
+                                nestedCenter /= nestedSector.Vertices.Count;
+
+                                Vector2 pushDirection = Vector2.Normalize(nestedCenter - position);
+                                float pushStrength = (warningDistance - distanceToBoundary) / warningDistance;
+                                adjustedPosition += pushDirection * pushStrength * 2f; // Stronger push toward center
+                            }
+                        }
+                    }
+                }
+            }
+
+            return adjustedPosition;
+        }
+
+        // Check if a point is near a sector boundary within given distance
+        private bool IsPointNearSector(Vector2 point, Sector sector, float distance)
+        {
+            return GetDistanceToSectorBoundary(point, sector) <= distance;
+        }
+
+        // Get distance from point to closest sector boundary
+        private float GetDistanceToSectorBoundary(Vector2 point, Sector sector)
+        {
+            float minDistance = float.MaxValue;
+
+            for (int i = 0; i < sector.Vertices.Count; i++)
+            {
+                Vector2 wallStart = sector.Vertices[i];
+                Vector2 wallEnd = sector.Vertices[(i + 1) % sector.Vertices.Count];
+
+                float distanceToWall = DistancePointToLine(point, wallStart, wallEnd);
+                minDistance = Math.Min(minDistance, distanceToWall);
+            }
+
+            return minDistance;
+        }
+
+        // Get direction to push away from sector boundary
+        private Vector2 GetPushDirectionFromSector(Vector2 point, Sector sector)
+        {
+            Vector2 sectorCenter = Vector2.Zero;
+            foreach (var vertex in sector.Vertices)
+                sectorCenter += vertex;
+            sectorCenter /= sector.Vertices.Count;
+
+            Vector2 direction = point - sectorCenter;
+            return direction.Length() > 0 ? Vector2.Normalize(direction) : Vector2.UnitX;
+        }
+
+        // Distance from point to line segment
+        private float DistancePointToLine(Vector2 point, Vector2 lineStart, Vector2 lineEnd)
+        {
+            Vector2 line = lineEnd - lineStart;
+            float lineLength = line.Length();
+            if (lineLength == 0) return Vector2.Distance(point, lineStart);
+
+            Vector2 lineDirection = line / lineLength;
+            Vector2 pointToStart = point - lineStart;
+            float projection = Vector2.Dot(pointToStart, lineDirection);
+            projection = Math.Clamp(projection, 0, lineLength);
+
+            Vector2 closestPoint = lineStart + lineDirection * projection;
+            return Vector2.Distance(point, closestPoint);
+        }
+
+        // Determine if movement should be blocked as wall collision vs allowed as step
+        // <24 units = step, >=24 units = wall collision
+        private bool ShouldBlockMovementAsWall(Sector currentSector, float heightDifference)
+        {
+            const float stepThreshold = 24f; // Units below this are steps, above are walls
+
+            Console.WriteLine($"Step/Wall check: Sector {currentSector.Id}, IsNested={currentSector.IsNested}, IsLift={currentSector.IsLift}, HeightDiff={heightDifference:F1}");
+
+            // Apply step/wall logic to nested sectors and lift sectors
+            if (!currentSector.IsNested && !currentSector.IsLift)
+            {
+                Console.WriteLine("Not nested/lift sector - allowing step up");
+                return false;
+            }
+
+            // If height difference is above threshold, treat as wall collision
+            bool isWall = heightDifference >= stepThreshold;
+            Console.WriteLine($"Nested/Lift sector - Height {heightDifference:F1} vs threshold {stepThreshold} = {(isWall ? "WALL" : "STEP")}");
+            return isWall;
         }
         
         // Interpolate height using proper Build engine slope plane calculation
@@ -6173,7 +6479,7 @@ namespace BuildEditor
             
             if (mostSpecificSector != null)
             {
-                Console.WriteLine($"Found sector {mostSpecificSector.Id} at position {position} (nesting level: {maxNestingLevel})");
+                // Console.WriteLine($"Found sector {mostSpecificSector.Id} at position {position} (nesting level: {maxNestingLevel})");
             }
             
             return mostSpecificSector;
@@ -6395,6 +6701,13 @@ namespace BuildEditor
             var texture = GetTexture(textureName);
             if (texture == null) return;
 
+            // Don't draw walls with no height difference
+            if (Math.Abs(ceilingHeight - floorHeight) < 0.1f) return;
+
+            // Ensure floor is always lower than ceiling for proper rendering
+            float actualFloor = Math.Min(floorHeight, ceilingHeight);
+            float actualCeiling = Math.Max(floorHeight, ceilingHeight);
+
             _basicEffect.Texture = texture;
 
             // Set sampler state to enable texture wrapping/tiling
@@ -6404,7 +6717,7 @@ namespace BuildEditor
 
             // Calculate wall length for proper UV tiling
             float wallLength = Vector2.Distance(start, end);
-            float wallHeight = ceilingHeight - floorHeight;
+            float wallHeight = actualCeiling - actualFloor;
             
             // Texture tiling: repeat texture based on world units (like Build engine)
             // Assume texture represents a certain world unit size (e.g., 64 units wide, 64 units tall)
@@ -6415,10 +6728,10 @@ namespace BuildEditor
             float vRepeat = wallHeight / textureWorldHeight;
 
             // Convert 2D coordinates to 3D (Z becomes Y, Y becomes -Z for proper orientation)
-            vertices[0] = new VertexPositionTexture(new Vector3(start.X, floorHeight, -start.Y), new Vector2(0, vRepeat)); // Bottom left
-            vertices[1] = new VertexPositionTexture(new Vector3(start.X, ceilingHeight, -start.Y), new Vector2(0, 0)); // Top left
-            vertices[2] = new VertexPositionTexture(new Vector3(end.X, ceilingHeight, -end.Y), new Vector2(uRepeat, 0)); // Top right
-            vertices[3] = new VertexPositionTexture(new Vector3(end.X, floorHeight, -end.Y), new Vector2(uRepeat, vRepeat)); // Bottom right
+            vertices[0] = new VertexPositionTexture(new Vector3(start.X, actualFloor, -start.Y), new Vector2(0, vRepeat)); // Bottom left
+            vertices[1] = new VertexPositionTexture(new Vector3(start.X, actualCeiling, -start.Y), new Vector2(0, 0)); // Top left
+            vertices[2] = new VertexPositionTexture(new Vector3(end.X, actualCeiling, -end.Y), new Vector2(uRepeat, 0)); // Top right
+            vertices[3] = new VertexPositionTexture(new Vector3(end.X, actualFloor, -end.Y), new Vector2(uRepeat, vRepeat)); // Bottom right
 
             var indices = new short[] { 0, 1, 2, 0, 2, 3 };
 
@@ -6447,7 +6760,7 @@ namespace BuildEditor
                 Draw3DWall(wall.Start, wall.End, upperBottom, upperTop, wallTexture);
             }
 
-            // Draw lower wall section if there's a floor height difference  
+            // Draw lower wall section if there's a floor height difference
             if (Math.Abs(floorA - floorB) > 0.01f)
             {
                 float lowerBottom = Math.Min(floorA, floorB);
@@ -6461,13 +6774,43 @@ namespace BuildEditor
 
         private void DrawNestedSectorHeightTransitionWall(Wall wall, Sector nestedSector, string wallTexture)
         {
-            // Get the parent sector
-            if (!nestedSector.ParentSectorId.HasValue)
-                return;
+            // First check if this wall borders another nested sector
+            Sector adjacentSector = null;
 
-            var parentSector = _sectors.FirstOrDefault(s => s.Id == nestedSector.ParentSectorId.Value);
-            if (parentSector == null)
-                return;
+            // Check if any point on this wall is inside another nested sector
+            Vector2 wallMidpoint = (wall.Start + wall.End) * 0.5f;
+            Vector2 wallDirection = Vector2.Normalize(wall.End - wall.Start);
+            Vector2 perpendicular = new Vector2(-wallDirection.Y, wallDirection.X); // Perpendicular to wall
+
+            // Check slightly on the other side of the wall
+            Vector2 otherSidePoint = wallMidpoint + perpendicular * 0.1f;
+            adjacentSector = _sectors.FirstOrDefault(s => s.IsNested && s != nestedSector && IsPointInSector(otherSidePoint, s));
+
+            // If no nested sector found on the other side, try the opposite direction
+            if (adjacentSector == null)
+            {
+                otherSidePoint = wallMidpoint - perpendicular * 0.1f;
+                adjacentSector = _sectors.FirstOrDefault(s => s.IsNested && s != nestedSector && IsPointInSector(otherSidePoint, s));
+            }
+
+            // Determine which sector to compare heights with
+            Sector compareSector;
+            if (adjacentSector != null)
+            {
+                // Wall is between two nested sectors - compare with the adjacent nested sector
+                compareSector = adjacentSector;
+                Console.WriteLine($"Wall between nested sectors {nestedSector.Id} and {adjacentSector.Id}");
+            }
+            else
+            {
+                // Wall borders parent sector - use parent sector for comparison
+                if (!nestedSector.ParentSectorId.HasValue)
+                    return;
+
+                compareSector = _sectors.FirstOrDefault(s => s.Id == nestedSector.ParentSectorId.Value);
+                if (compareSector == null)
+                    return;
+            }
 
             // Check if nested sector has slopes - if so, use sloped wall rendering
             if (nestedSector.HasSlopes)
@@ -6478,23 +6821,29 @@ namespace BuildEditor
             }
 
             // Only draw transition walls when there are actual height differences
-            bool hasFloorDifference = Math.Abs(nestedSector.FloorHeight - parentSector.FloorHeight) > 0.1f;
-            bool hasCeilingDifference = Math.Abs(nestedSector.CeilingHeight - parentSector.CeilingHeight) > 0.1f;
+            // Include AnimationHeightOffset to handle moving lifts properly
+            float nestedFloorHeight = nestedSector.FloorHeight + nestedSector.AnimationHeightOffset;
+            float nestedCeilingHeight = nestedSector.CeilingHeight + (nestedSector.IsLift ? 0 : nestedSector.AnimationHeightOffset);
+            float compareFloorHeight = compareSector.FloorHeight + compareSector.AnimationHeightOffset;
+            float compareCeilingHeight = compareSector.CeilingHeight + (compareSector.IsLift ? 0 : compareSector.AnimationHeightOffset);
+
+            bool hasFloorDifference = Math.Abs(nestedFloorHeight - compareFloorHeight) > 0.1f;
+            bool hasCeilingDifference = Math.Abs(nestedCeilingHeight - compareCeilingHeight) > 0.1f;
 
             // If no height differences, don't draw any walls (this creates the "pit" effect)
             if (!hasFloorDifference && !hasCeilingDifference)
                 return;
 
-            // Draw floor transition wall (from parent floor to nested floor)
+            // Draw floor transition wall (from compare sector floor to nested floor)
             if (hasFloorDifference)
             {
-                Draw3DWall(wall.Start, wall.End, parentSector.FloorHeight, nestedSector.FloorHeight, wallTexture);
+                Draw3DWall(wall.Start, wall.End, compareFloorHeight, nestedFloorHeight, wallTexture);
             }
 
-            // Draw ceiling transition wall (from nested ceiling to parent ceiling)  
+            // Draw ceiling transition wall (from nested ceiling to compare sector ceiling)
             if (hasCeilingDifference)
             {
-                Draw3DWall(wall.Start, wall.End, nestedSector.CeilingHeight, parentSector.CeilingHeight, wallTexture);
+                Draw3DWall(wall.Start, wall.End, nestedCeilingHeight, compareCeilingHeight, wallTexture);
             }
         }
 
@@ -7071,12 +7420,8 @@ namespace BuildEditor
             // Get sprite color based on tag
             Color spriteColor = sprite.Tag switch
             {
-                SpriteTag.Enemy => Color.Red,
-                SpriteTag.Pickup => Color.Green,
+                SpriteTag.Switch => Color.Magenta,
                 SpriteTag.Decoration => Color.Cyan,
-                SpriteTag.Trigger => Color.Orange,
-                SpriteTag.Light => Color.Yellow,
-                SpriteTag.Sound => Color.Purple,
                 _ => Color.White
             };
 
@@ -7624,12 +7969,7 @@ namespace BuildEditor
     public enum SpriteTag
     {
         Decoration, // Static decorative sprites
-        Enemy, // Enemy spawn points
-        Pickup, // Item pickups (health, ammo, keys, etc.)
-        Trigger, // Interactive triggers
-        Light, // Light sources
-        Sound, // Sound emitters
-        Switch // Switch/button for activating doors/lifts
+        Switch // Switch/button for activating doors/lifts - FUNCTIONAL
     }
 
     public class Sprite
@@ -7735,6 +8075,7 @@ namespace BuildEditor
         public float LiftHighHeight { get; set; } = 128f; // Top position
         public float LiftSpeed { get; set; } = 32f; // Units per second
         public LiftState LiftState { get; set; } = LiftState.AtBottom;
+        public bool PlayerWasStandingOnLift { get; set; } = false; // Track if player was on lift when it started moving
 
         // Sector animation properties (Build engine style)
         public Vector2 AnimationOffset { get; set; } = Vector2.Zero; // For sliding doors
@@ -7909,4 +8250,3 @@ namespace BuildEditor
         }
     }
 }
-    
