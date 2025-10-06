@@ -5,11 +5,58 @@ using System.Collections.Generic;
 using System;
 using System.Linq;
 using System.IO;
+using System.Text.Json;
+using System.Text.Json.Serialization;
 using Myra;
 using Myra.Graphics2D.UI;
+using Myra.Graphics2D.Brushes;
 
 namespace BuildEditor
 {
+    /// <summary>
+    /// JSON converter for MonoGame Vector2 struct
+    /// </summary>
+    public class Vector2JsonConverter : JsonConverter<Vector2>
+    {
+        public override Vector2 Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType != JsonTokenType.StartObject)
+                throw new JsonException("Expected StartObject token");
+
+            float x = 0, y = 0;
+            while (reader.Read())
+            {
+                if (reader.TokenType == JsonTokenType.EndObject)
+                    return new Vector2(x, y);
+
+                if (reader.TokenType == JsonTokenType.PropertyName)
+                {
+                    string propertyName = reader.GetString()?.ToLower();
+                    reader.Read();
+
+                    switch (propertyName)
+                    {
+                        case "x":
+                            x = reader.GetSingle();
+                            break;
+                        case "y":
+                            y = reader.GetSingle();
+                            break;
+                    }
+                }
+            }
+            throw new JsonException("Unexpected end of JSON input");
+        }
+
+        public override void Write(Utf8JsonWriter writer, Vector2 value, JsonSerializerOptions options)
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("x", value.X);
+            writer.WriteNumber("y", value.Y);
+            writer.WriteEndObject();
+        }
+    }
+
     public class BuildLevelEditor : Game
     {
         private GraphicsDeviceManager _graphics;
@@ -76,6 +123,9 @@ namespace BuildEditor
         private Panel _propertiesPanel;
         private Panel _toolsPanel;
         private Panel _statusPanel;
+        private Window _saveLoadWindow;
+        private bool _saveLoadWindowVisible = false;
+        private Panel _levelListPanel;
         private Label _cameraLabel;
         private Label _zoomLabel;
         private Label _mouseLabel;
@@ -190,7 +240,8 @@ namespace BuildEditor
         private TextBox _spritePositionXBox, _spritePositionYBox;
         private TextBox _spriteAngleBox;
         private TextBox _spriteScaleXBox, _spriteScaleYBox;
-        private TextBox _spritePaletteBox;
+        private TextBox _spriteHeightBox;
+        private ComboView _spriteTextureBox;
         private TextBox _spriteLoTagBox;
         private TextBox _spriteHiTagBox;
         private ComboView _spriteAlignmentBox;
@@ -430,6 +481,15 @@ namespace BuildEditor
             toolsGrid.Widgets.Add(_nestedSectorButton);
             Grid.SetRow(_nestedSectorButton, 16);
 
+            // Level Manager button
+            var levelManagerButton = new Button
+            {
+                Content = new Label { Text = "Level Manager (Ctrl+O)", TextColor = Color.Yellow }
+            };
+            levelManagerButton.Click += (s, e) => ToggleSaveLoadWindow();
+            toolsGrid.Widgets.Add(levelManagerButton);
+            Grid.SetRow(levelManagerButton, 17);
+
             // Player spawns automatically at (0,0) and can be selected/dragged
 
 
@@ -459,6 +519,19 @@ namespace BuildEditor
             };
             _statusPanel.Widgets.Add(_statusLabel);
             _desktop.Widgets.Add(_statusPanel);
+
+            // Save/Load Window (popup)
+            _saveLoadWindow = new Window
+            {
+                Title = "Level Manager",
+                Left = 300,
+                Top = 200,
+                Width = 400,
+                Height = 450,
+                Visible = false
+            };
+
+            SetupLevelManagerContent();
         }
 
         private void UpdateSlopeButtonStates()
@@ -485,6 +558,93 @@ namespace BuildEditor
             {
                 ((Label)_nestedSectorButton.Content).TextColor = _createNestedSector ? Color.Yellow : Color.White;
             }
+        }
+
+        private void SetupLevelManagerContent()
+        {
+            var mainGrid = new Grid
+            {
+                RowSpacing = 5,
+                ColumnSpacing = 5
+            };
+
+            // Add rows: New Level, Save As section, Level List (scrollable), Save button
+            mainGrid.RowsProportions.Add(new Proportion(ProportionType.Auto)); // New Level button
+            mainGrid.RowsProportions.Add(new Proportion(ProportionType.Auto)); // Save section title
+            mainGrid.RowsProportions.Add(new Proportion(ProportionType.Auto)); // Save text box
+            mainGrid.RowsProportions.Add(new Proportion(ProportionType.Auto)); // Save button
+            mainGrid.RowsProportions.Add(new Proportion(ProportionType.Auto)); // Available levels title
+            mainGrid.RowsProportions.Add(new Proportion(ProportionType.Fill)); // Level list (scrollable)
+            mainGrid.ColumnsProportions.Add(new Proportion(ProportionType.Fill));
+
+            // New Level button
+            var newLevelButton = new Button
+            {
+                Content = new Label { Text = "New Level (Ctrl+N)", TextColor = Color.White }
+            };
+            newLevelButton.Click += (s, e) => {
+                NewLevel();
+                _statusLabel.Text = "New level created!";
+            };
+            mainGrid.Widgets.Add(newLevelButton);
+            Grid.SetRow(newLevelButton, 0);
+
+            // Save As section
+            var saveAsLabel = new Label { Text = "Save Current Level As:", TextColor = Color.White };
+            mainGrid.Widgets.Add(saveAsLabel);
+            Grid.SetRow(saveAsLabel, 1);
+
+            var fileNameTextBox = new TextBox
+            {
+                Text = "my_level"
+            };
+            mainGrid.Widgets.Add(fileNameTextBox);
+            Grid.SetRow(fileNameTextBox, 2);
+
+            var saveAsButton = new Button
+            {
+                Content = new Label { Text = "Save Level", TextColor = Color.White }
+            };
+            saveAsButton.Click += (s, e) => {
+                var fileName = fileNameTextBox.Text.Trim();
+                if (string.IsNullOrEmpty(fileName))
+                {
+                    _statusLabel.Text = "Enter a filename!";
+                    return;
+                }
+
+                if (!fileName.EndsWith(".json"))
+                    fileName += ".json";
+
+                var filePath = Path.Combine("levels", fileName);
+                if (SaveLevel(filePath, fileName.Replace(".json", ""), "User created level"))
+                {
+                    _statusLabel.Text = $"Saved as: {fileName}";
+                    RefreshLevelList();
+                }
+                else
+                {
+                    _statusLabel.Text = "Save failed!";
+                }
+            };
+            mainGrid.Widgets.Add(saveAsButton);
+            Grid.SetRow(saveAsButton, 3);
+
+            // Available levels title
+            var levelsTitle = new Label { Text = "Available Levels:", TextColor = Color.White };
+            mainGrid.Widgets.Add(levelsTitle);
+            Grid.SetRow(levelsTitle, 4);
+
+            // Level list panel (scrollable)
+            _levelListPanel = new Panel();
+            mainGrid.Widgets.Add(_levelListPanel);
+            Grid.SetRow(_levelListPanel, 5);
+
+            _saveLoadWindow.Content = mainGrid;
+            _desktop.Widgets.Add(_saveLoadWindow);
+
+            // Initial refresh of level list
+            RefreshLevelList();
         }
 
         private void SetupSectorPropertiesWindow()
@@ -807,12 +967,12 @@ namespace BuildEditor
             var scrollPane = new ScrollViewer();
             var spriteGrid = new Grid
             {
-                RowSpacing = 5,
+                RowSpacing = 8,
                 ColumnSpacing = 8
             };
 
             // Setup grid with enough rows
-            for (int i = 0; i < 20; i++)
+            for (int i = 0; i < 25; i++)
             {
                 spriteGrid.RowsProportions.Add(new Proportion(ProportionType.Auto));
             }
@@ -827,6 +987,12 @@ namespace BuildEditor
             spriteGrid.Widgets.Add(titleLabel);
             Grid.SetRow(titleLabel, row++);
             Grid.SetColumnSpan(titleLabel, 2);
+
+            // === TRANSFORM SECTION ===
+            var transformSectionLabel = new Label { Text = "TRANSFORM", TextColor = Color.Cyan };
+            spriteGrid.Widgets.Add(transformSectionLabel);
+            Grid.SetRow(transformSectionLabel, row++);
+            Grid.SetColumnSpan(transformSectionLabel, 2);
 
             // Position
             var positionLabel = new Label { Text = "Position:", TextColor = Color.Yellow };
@@ -848,6 +1014,26 @@ namespace BuildEditor
             Grid.SetColumn(positionPanel, 1);
             row++;
 
+            // Scale (Size)
+            var scaleLabel = new Label { Text = "Size:", TextColor = Color.Yellow };
+            spriteGrid.Widgets.Add(scaleLabel);
+            Grid.SetRow(scaleLabel, row);
+
+            var scalePanel = new Panel();
+            _spriteScaleXBox = new TextBox { Width = 80, Text = "32.0" };
+            _spriteScaleYBox = new TextBox { Width = 80, Text = "32.0", Left = 90 };
+            var scaleXLabel = new Label { Text = "W", TextColor = Color.White, Top = -20 };
+            var scaleYLabel = new Label { Text = "H", TextColor = Color.White, Left = 90, Top = -20 };
+            scalePanel.Widgets.Add(scaleXLabel);
+            scalePanel.Widgets.Add(scaleYLabel);
+            scalePanel.Widgets.Add(_spriteScaleXBox);
+            scalePanel.Widgets.Add(_spriteScaleYBox);
+
+            spriteGrid.Widgets.Add(scalePanel);
+            Grid.SetRow(scalePanel, row);
+            Grid.SetColumn(scalePanel, 1);
+            row++;
+
             // Angle
             var angleLabel = new Label { Text = "Angle:", TextColor = Color.Yellow };
             spriteGrid.Widgets.Add(angleLabel);
@@ -859,35 +1045,37 @@ namespace BuildEditor
             Grid.SetColumn(_spriteAngleBox, 1);
             row++;
 
-            // Scale
-            var scaleLabel = new Label { Text = "Scale:", TextColor = Color.Yellow };
-            spriteGrid.Widgets.Add(scaleLabel);
-            Grid.SetRow(scaleLabel, row);
+            // Vertical Position
+            var heightLabel = new Label { Text = "Vertical Position:", TextColor = Color.Yellow };
+            spriteGrid.Widgets.Add(heightLabel);
+            Grid.SetRow(heightLabel, row);
 
-            var scalePanel = new Panel();
-            _spriteScaleXBox = new TextBox { Width = 80, Text = "1.0" };
-            _spriteScaleYBox = new TextBox { Width = 80, Text = "1.0", Left = 90 };
-            var scaleXLabel = new Label { Text = "X", TextColor = Color.White, Top = -20 };
-            var scaleYLabel = new Label { Text = "Y", TextColor = Color.White, Left = 90, Top = -20 };
-            scalePanel.Widgets.Add(scaleXLabel);
-            scalePanel.Widgets.Add(scaleYLabel);
-            scalePanel.Widgets.Add(_spriteScaleXBox);
-            scalePanel.Widgets.Add(_spriteScaleYBox);
-
-            spriteGrid.Widgets.Add(scalePanel);
-            Grid.SetRow(scalePanel, row);
-            Grid.SetColumn(scalePanel, 1);
+            _spriteHeightBox = new TextBox { Width = 100, Text = "64.0" };
+            spriteGrid.Widgets.Add(_spriteHeightBox);
+            Grid.SetRow(_spriteHeightBox, row);
+            Grid.SetColumn(_spriteHeightBox, 1);
             row++;
 
-            // Palette
-            var paletteLabel = new Label { Text = "Palette:", TextColor = Color.Yellow };
-            spriteGrid.Widgets.Add(paletteLabel);
-            Grid.SetRow(paletteLabel, row);
+            // Add some spacing
+            row++;
 
-            _spritePaletteBox = new TextBox { Width = 100, Text = "0" };
-            spriteGrid.Widgets.Add(_spritePaletteBox);
-            Grid.SetRow(_spritePaletteBox, row);
-            Grid.SetColumn(_spritePaletteBox, 1);
+            // === APPEARANCE SECTION ===
+            var appearanceSectionLabel = new Label { Text = "APPEARANCE", TextColor = Color.Cyan };
+            spriteGrid.Widgets.Add(appearanceSectionLabel);
+            Grid.SetRow(appearanceSectionLabel, row++);
+            Grid.SetColumnSpan(appearanceSectionLabel, 2);
+
+            // Texture
+            var textureLabel = new Label { Text = "Texture:", TextColor = Color.Yellow };
+            spriteGrid.Widgets.Add(textureLabel);
+            Grid.SetRow(textureLabel, row);
+
+            _spriteTextureBox = new ComboView { Width = 150 };
+            // Populate texture dropdown
+            PopulateSpriteTextureDropdown();
+            spriteGrid.Widgets.Add(_spriteTextureBox);
+            Grid.SetRow(_spriteTextureBox, row);
+            Grid.SetColumn(_spriteTextureBox, 1);
             row++;
 
             // Alignment
@@ -906,6 +1094,15 @@ namespace BuildEditor
             Grid.SetColumn(_spriteAlignmentBox, 1);
             row++;
 
+            // Add some spacing
+            row++;
+
+            // === FUNCTIONALITY SECTION ===
+            var functionalitySectionLabel = new Label { Text = "FUNCTIONALITY", TextColor = Color.Cyan };
+            spriteGrid.Widgets.Add(functionalitySectionLabel);
+            Grid.SetRow(functionalitySectionLabel, row++);
+            Grid.SetColumnSpan(functionalitySectionLabel, 2);
+
             // Tag
             var tagLabel = new Label { Text = "Tag:", TextColor = Color.Yellow };
             spriteGrid.Widgets.Add(tagLabel);
@@ -914,6 +1111,8 @@ namespace BuildEditor
             _spriteTagBox = new ComboView { Width = 120 };
             _spriteTagBox.Widgets.Add(new Label { Text = "Decoration", TextColor = Color.White });
             _spriteTagBox.Widgets.Add(new Label { Text = "Switch", TextColor = Color.Orange });
+            _spriteTagBox.Widgets.Add(new Label { Text = "Enemy", TextColor = Color.Red });
+            _spriteTagBox.Widgets.Add(new Label { Text = "Item", TextColor = Color.Green });
             _spriteTagBox.SelectedIndex = 0; // Default to Decoration
 
             spriteGrid.Widgets.Add(_spriteTagBox);
@@ -926,18 +1125,18 @@ namespace BuildEditor
             spriteGrid.Widgets.Add(spriteLoTagLabel);
             Grid.SetRow(spriteLoTagLabel, row);
 
-            _spriteLoTagBox = new TextBox { Width = 60, Text = "0" };
+            _spriteLoTagBox = new TextBox { Width = 100, Text = "0" };
             spriteGrid.Widgets.Add(_spriteLoTagBox);
             Grid.SetRow(_spriteLoTagBox, row);
             Grid.SetColumn(_spriteLoTagBox, 1);
             row++;
 
-            // HiTag  
+            // HiTag
             var spriteHiTagLabel = new Label { Text = "HiTag:", TextColor = Color.Yellow };
             spriteGrid.Widgets.Add(spriteHiTagLabel);
             Grid.SetRow(spriteHiTagLabel, row);
 
-            _spriteHiTagBox = new TextBox { Width = 60, Text = "0" };
+            _spriteHiTagBox = new TextBox { Width = 100, Text = "0" };
             spriteGrid.Widgets.Add(_spriteHiTagBox);
             Grid.SetRow(_spriteHiTagBox, row);
             Grid.SetColumn(_spriteHiTagBox, 1);
@@ -949,7 +1148,8 @@ namespace BuildEditor
             _spriteAngleBox.TextChanged += OnSpritePropertyChanged;
             _spriteScaleXBox.TextChanged += OnSpritePropertyChanged;
             _spriteScaleYBox.TextChanged += OnSpritePropertyChanged;
-            _spritePaletteBox.TextChanged += OnSpritePropertyChanged;
+            _spriteHeightBox.TextChanged += OnSpritePropertyChanged;
+            _spriteTextureBox.SelectedIndexChanged += OnSpritePropertyChanged;
             _spriteAlignmentBox.SelectedIndexChanged += OnSpritePropertyChanged;
             _spriteTagBox.SelectedIndexChanged += OnSpritePropertyChanged;
             _spriteLoTagBox.TextChanged += OnSpritePropertyChanged;
@@ -963,6 +1163,26 @@ namespace BuildEditor
             if (_spriteEditorWindow.CloseButton != null)
             {
                 _spriteEditorWindow.CloseButton.Visible = false;
+            }
+        }
+
+        private void PopulateSpriteTextureDropdown()
+        {
+            if (_spriteTextureBox == null) return;
+
+            _spriteTextureBox.Widgets.Clear();
+
+            // Add all available sprite textures
+            foreach (var textureName in _spriteTextures.Keys)
+            {
+                var label = new Label { Text = textureName, TextColor = Color.White };
+                _spriteTextureBox.Widgets.Add(label);
+            }
+
+            // Default to first texture if available
+            if (_spriteTextureBox.Widgets.Count > 0)
+            {
+                _spriteTextureBox.SelectedIndex = 0;
             }
         }
 
@@ -1036,6 +1256,59 @@ namespace BuildEditor
 
             row++;
             return (offsetXBox, offsetYBox);
+        }
+
+        private Panel CreateNumericInput(string defaultValue, int width, float stepSize, Action<float> onValueChanged)
+        {
+            var panel = new Panel();
+            var horizontalStack = new HorizontalStackPanel();
+
+            var textBox = new TextBox { Text = defaultValue, Width = width };
+            textBox.TextChanged += (s, e) =>
+            {
+                if (float.TryParse(textBox.Text, out float value))
+                    onValueChanged(value);
+            };
+
+            var downButton = new Button
+            {
+                Content = new Label { Text = "▼" },
+                Width = 20,
+                Height = 20
+            };
+            downButton.Click += (s, e) =>
+            {
+                if (float.TryParse(textBox.Text, out float currentValue))
+                {
+                    var newValue = currentValue - stepSize;
+                    textBox.Text = newValue.ToString("F2");
+                }
+            };
+
+            var upButton = new Button
+            {
+                Content = new Label { Text = "▲" },
+                Width = 20,
+                Height = 20
+            };
+            upButton.Click += (s, e) =>
+            {
+                if (float.TryParse(textBox.Text, out float currentValue))
+                {
+                    var newValue = currentValue + stepSize;
+                    textBox.Text = newValue.ToString("F2");
+                }
+            };
+
+            var buttonStack = new VerticalStackPanel();
+            buttonStack.Widgets.Add(upButton);
+            buttonStack.Widgets.Add(downButton);
+
+            horizontalStack.Widgets.Add(textBox);
+            horizontalStack.Widgets.Add(buttonStack);
+
+            panel.Widgets.Add(horizontalStack);
+            return panel;
         }
 
         private (TextBox, TextBox) AddUVScaleRow(Grid grid, string label, string textureType, ref int row)
@@ -1304,11 +1577,19 @@ namespace BuildEditor
                 if (_spriteAngleBox != null)
                     _spriteAngleBox.Text = _selectedSprite.Angle.ToString("F1");
                 if (_spriteScaleXBox != null)
-                    _spriteScaleXBox.Text = _selectedSprite.Scale.X.ToString("F2");
+                    _spriteScaleXBox.Text = (_selectedSprite.Scale.X * 32f).ToString("F1");
                 if (_spriteScaleYBox != null)
-                    _spriteScaleYBox.Text = _selectedSprite.Scale.Y.ToString("F2");
-                if (_spritePaletteBox != null)
-                    _spritePaletteBox.Text = _selectedSprite.Palette.ToString();
+                    _spriteScaleYBox.Text = (_selectedSprite.Scale.Y * 32f).ToString("F1");
+                if (_spriteHeightBox != null)
+                    _spriteHeightBox.Text = _selectedSprite.Height.ToString("F1");
+                if (_spriteTextureBox != null)
+                {
+                    // Set texture dropdown to current sprite texture
+                    var textureNames = _spriteTextures.Keys.ToList();
+                    var textureIndex = textureNames.IndexOf(_selectedSprite.TextureName);
+                    if (textureIndex >= 0 && textureIndex < _spriteTextureBox.Widgets.Count)
+                        _spriteTextureBox.SelectedIndex = textureIndex;
+                }
                 if (_spriteAlignmentBox != null)
                     _spriteAlignmentBox.SelectedIndex = (int)_selectedSprite.Alignment;
                 if (_spriteTagBox != null)
@@ -1409,21 +1690,28 @@ namespace BuildEditor
             if (float.TryParse(_spriteAngleBox.Text, out float angle))
                 _selectedSprite.Angle = angle;
 
-            if (float.TryParse(_spriteScaleXBox.Text, out float scaleX))
-                _selectedSprite.Scale = new Vector2(scaleX, _selectedSprite.Scale.Y);
+            if (float.TryParse(_spriteScaleXBox.Text, out float sizeX))
+                _selectedSprite.Scale = new Vector2(sizeX / 32f, _selectedSprite.Scale.Y);
 
-            if (float.TryParse(_spriteScaleYBox.Text, out float scaleY))
-                _selectedSprite.Scale = new Vector2(_selectedSprite.Scale.X, scaleY);
+            if (float.TryParse(_spriteScaleYBox.Text, out float sizeY))
+                _selectedSprite.Scale = new Vector2(_selectedSprite.Scale.X, sizeY / 32f);
 
-            if (int.TryParse(_spritePaletteBox.Text, out int palette))
-                _selectedSprite.Palette = palette;
+            if (float.TryParse(_spriteHeightBox.Text, out float height))
+                _selectedSprite.Height = height;
+
+            // Handle texture selection
+            if (_spriteTextureBox.SelectedIndex >= 0 && _spriteTextureBox.SelectedIndex < _spriteTextureBox.Widgets.Count)
+            {
+                var selectedLabel = (Label)_spriteTextureBox.Widgets[_spriteTextureBox.SelectedIndex.Value];
+                _selectedSprite.TextureName = selectedLabel.Text;
+            }
 
             if (_spriteAlignmentBox.SelectedIndex >= 0 && _spriteAlignmentBox.SelectedIndex < 3)
             {
                 _selectedSprite.Alignment = (SpriteAlignment)_spriteAlignmentBox.SelectedIndex;
             }
 
-            if (_spriteTagBox.SelectedIndex >= 0 && _spriteTagBox.SelectedIndex < 2)
+            if (_spriteTagBox.SelectedIndex >= 0 && _spriteTagBox.SelectedIndex < 4)
             {
                 var oldTag = _selectedSprite.Tag;
                 _selectedSprite.Tag = (SpriteTag)_spriteTagBox.SelectedIndex;
@@ -2389,6 +2677,7 @@ namespace BuildEditor
                         else
                         {
                             // Deselect sprite but don't close editors in 3D mode
+                            Console.WriteLine("Deselecting sprites - clicked empty space");
                             _selectedSprite3D = null;
                             _selectedSprite = null;
                             // Keep editors open in 3D mode
@@ -2878,6 +3167,14 @@ namespace BuildEditor
             }
         }
 
+        private void RestoreSpritesTo2DMode()
+        {
+            // Clear auto-align mode when exiting 3D mode
+            _autoAlignMode = false;
+
+            Console.WriteLine("Exited 3D mode - preserving sprite alignments");
+        }
+
         // Slope system helper methods
         private float GetVertexHeight(Sector sector, int vertexIndex, bool isFloor)
         {
@@ -3356,6 +3653,9 @@ namespace BuildEditor
             // Load sprite textures (fallback procedural textures)
             LoadSpriteTextures();
 
+            // Repopulate sprite texture dropdown now that textures are loaded
+            PopulateSpriteTextureDropdown();
+
             // Load wall/floor/ceiling textures (fallback procedural textures)
             LoadWallTextures();
 
@@ -3472,52 +3772,8 @@ namespace BuildEditor
 
         private void LoadSpriteTextures()
         {
-            // Create simple colored textures for different sprite types since we don't have actual sprite files
-            // You can replace these with actual texture loading: Content.Load<Texture2D>("sprite_name")
-
-            // Default sprite texture (white square)
-            var defaultTexture = new Texture2D(GraphicsDevice, 16, 16);
-            var defaultData = new Color[16 * 16];
-            for (int i = 0; i < defaultData.Length; i++)
-                defaultData[i] = Color.White;
-            defaultTexture.SetData(defaultData);
-            _spriteTextures["Default"] = defaultTexture;
-
-            // Enemy sprite texture (red square with black border)
-            var enemyTexture = new Texture2D(GraphicsDevice, 16, 16);
-            var enemyData = new Color[16 * 16];
-            for (int y = 0; y < 16; y++)
-            {
-                for (int x = 0; x < 16; x++)
-                {
-                    if (x == 0 || x == 15 || y == 0 || y == 15)
-                        enemyData[y * 16 + x] = Color.Black; // Border
-                    else
-                        enemyData[y * 16 + x] = Color.Red; // Fill
-                }
-            }
-
-            enemyTexture.SetData(enemyData);
-            _spriteTextures["Enemy"] = enemyTexture;
-
-            // Pickup sprite texture (green circle)
-            var pickupTexture = new Texture2D(GraphicsDevice, 16, 16);
-            var pickupData = new Color[16 * 16];
-            Vector2 center = new Vector2(8, 8);
-            for (int y = 0; y < 16; y++)
-            {
-                for (int x = 0; x < 16; x++)
-                {
-                    float distance = Vector2.Distance(new Vector2(x, y), center);
-                    if (distance <= 7)
-                        pickupData[y * 16 + x] = Color.Green;
-                    else
-                        pickupData[y * 16 + x] = Color.Transparent;
-                }
-            }
-
-            pickupTexture.SetData(pickupData);
-            _spriteTextures["Pickup"] = pickupTexture;
+            // No fallback textures - only use textures from SpriteTextures folder
+            // All sprite textures are loaded by LoadTexturesFromContent() from Content.mgcb
         }
 
         private void LoadWallTextures()
@@ -3724,7 +3980,16 @@ namespace BuildEditor
 
             // Tab key to toggle 3D mode
             if (keyboardState.IsKeyDown(Keys.Tab) && !_previousKeyboardState.IsKeyDown(Keys.Tab))
+            {
+                bool wasIn3DMode = _is3DMode;
                 _is3DMode = !_is3DMode;
+
+                // When exiting 3D mode, restore sprite positions and alignments to 2D defaults
+                if (wasIn3DMode && !_is3DMode)
+                {
+                    RestoreSpritesTo2DMode();
+                }
+            }
             
             // 2 key to toggle collision mode
             if (keyboardState.IsKeyDown(Keys.D2) && !_previousKeyboardState.IsKeyDown(Keys.D2))
@@ -3805,6 +4070,63 @@ namespace BuildEditor
             {
                 _selectedSprite3D = null;
                 _selectedSprite = null;
+            }
+
+            // Save/Load shortcuts
+            if (keyboardState.IsKeyDown(Keys.LeftControl) || keyboardState.IsKeyDown(Keys.RightControl))
+            {
+                // Ctrl+S: Quick Save
+                if (keyboardState.IsKeyDown(Keys.S) && !_previousKeyboardState.IsKeyDown(Keys.S))
+                {
+                    if (QuickSave())
+                        Console.WriteLine("Level quick saved!");
+                    else
+                        Console.WriteLine("Quick save failed!");
+                }
+
+                // Ctrl+L: Quick Load
+                if (keyboardState.IsKeyDown(Keys.L) && !_previousKeyboardState.IsKeyDown(Keys.L))
+                {
+                    if (QuickLoad())
+                        Console.WriteLine("Level quick loaded!");
+                    else
+                        Console.WriteLine("Quick load failed!");
+                }
+
+                // Ctrl+N: New Level
+                if (keyboardState.IsKeyDown(Keys.N) && !_previousKeyboardState.IsKeyDown(Keys.N))
+                {
+                    NewLevel();
+                }
+
+                // Ctrl+O: Toggle Level Manager Window
+                if (keyboardState.IsKeyDown(Keys.O) && !_previousKeyboardState.IsKeyDown(Keys.O))
+                {
+                    ToggleSaveLoadWindow();
+                }
+            }
+
+            // Ctrl+Number keys: Load specific levels
+            if ((keyboardState.IsKeyDown(Keys.LeftControl) || keyboardState.IsKeyDown(Keys.RightControl)))
+            {
+                var levels = GetAvailableLevels();
+                for (int i = 0; i < Math.Min(levels.Length, 9); i++)
+                {
+                    var numberKey = Keys.D1 + i; // D1, D2, D3, etc.
+                    if (keyboardState.IsKeyDown(numberKey) && !_previousKeyboardState.IsKeyDown(numberKey))
+                    {
+                        if (LoadLevel(levels[i]))
+                        {
+                            var info = GetLevelInfo(levels[i]);
+                            Console.WriteLine($"Loaded level: {info?.Name ?? Path.GetFileNameWithoutExtension(levels[i])}");
+                        }
+                        else
+                        {
+                            Console.WriteLine($"Failed to load level: {levels[i]}");
+                        }
+                        break;
+                    }
+                }
             }
 
             // Arrow key rotation for selected sprite in 3D mode
@@ -4794,33 +5116,27 @@ namespace BuildEditor
             // Get texture for sprite (use TextureName or fallback based on tag)
             string textureName = sprite.TextureName;
 
-            // If sprite doesn't have a specific texture, choose based on tag
-            if (string.IsNullOrEmpty(textureName) || !_spriteTextures.ContainsKey(textureName))
+            // Only use textures from SpriteTextures folder
+            if (string.IsNullOrEmpty(textureName) || !textureName.StartsWith("SpriteTextures/"))
             {
-                textureName = "Default";
+                textureName = "SpriteTextures/Dudeman"; // Default to Dudeman sprite
             }
 
             // Get the texture
             if (_spriteTextures.TryGetValue(textureName, out Texture2D texture))
             {
-                // Calculate sprite size with scale
-                float scaleX = sprite.Scale.X;
-                float scaleY = sprite.Scale.Y;
+                // Use fixed size for 2D representation (16x16 pixels)
+                const float spriteSize2D = 16f;
 
-                // Tint color based on sprite tag for visibility
-                Color tintColor = sprite.Tag switch
-                {
-                    SpriteTag.Switch => Color.Magenta,
-                    SpriteTag.Decoration => Color.Cyan,
-                    _ => Color.White
-                };
+                // Calculate scale to fit texture into fixed size
+                float textureScale = spriteSize2D / Math.Max(texture.Width, texture.Height);
 
-                // Draw sprite with rotation and scale
+                // Draw sprite with rotation and fixed size
                 Vector2 origin = new Vector2(texture.Width / 2, texture.Height / 2);
                 float rotation = MathHelper.ToRadians(sprite.Angle);
-                Vector2 scale = new Vector2(scaleX, scaleY);
+                Vector2 scale = new Vector2(textureScale, textureScale);
 
-                _spriteBatch.Draw(texture, sprite.Position, null, tintColor, rotation, origin, scale,
+                _spriteBatch.Draw(texture, sprite.Position, null, Color.White, rotation, origin, scale,
                     SpriteEffects.None, 0f);
             }
             else
@@ -5032,11 +5348,11 @@ namespace BuildEditor
                     {
                         Id = _nextSpriteId++,
                         Position = mouseWorldPos,
+                        Height = clickedSector.FloorHeight + 32f, // Position sprite center 32 units above floor
                         SectorId = clickedSector.Id,
                         TextureName = "Default",
                         Tag = SpriteTag.Decoration,
-                        Alignment = SpriteAlignment.Face,
-                        Height = 32f // Set reasonable default height above floor
+                        Alignment = SpriteAlignment.Face
                     };
 
                     clickedSector.Sprites.Add(newSprite);
@@ -6607,6 +6923,175 @@ namespace BuildEditor
             {
                 Draw3DNestedSector(sector, renderedSectors);
             }
+
+            // Finally, render all sprites sorted by distance (Build Engine style)
+            DrawSortedSprites();
+        }
+
+        private void DrawSortedSprites()
+        {
+            // Collect all sprites with their distances (Build Engine approach)
+            var spritesToRender = new List<(Sprite sprite, Sector sector, float distance)>();
+
+            foreach (var sector in _sectors)
+            {
+                foreach (var sprite in sector.Sprites)
+                {
+                    if (!sprite.Visible) continue;
+
+                    // Calculate distance from camera to sprite
+                    Vector3 spriteWorldPos = new Vector3(sprite.Position.X, 0, -sprite.Position.Y);
+                    float distance = Vector3.Distance(_camera3DPosition, spriteWorldPos);
+
+                    spritesToRender.Add((sprite, sector, distance));
+                }
+            }
+
+            // Sort sprites by distance (far to near - painter's algorithm)
+            spritesToRender.Sort((a, b) => b.distance.CompareTo(a.distance));
+
+            // Disable depth writing for sprites (they're rendered in proper order)
+            var originalDepthStencilState = GraphicsDevice.DepthStencilState;
+            var depthStencilState = new DepthStencilState
+            {
+                DepthBufferEnable = false,
+                DepthBufferWriteEnable = false
+            };
+            GraphicsDevice.DepthStencilState = depthStencilState;
+
+            // Render sprites in sorted order
+            foreach (var (sprite, sector, distance) in spritesToRender)
+            {
+                DrawSprite3D(sprite, sector);
+
+                // Draw selection highlight for selected sprite
+                if (sprite == _selectedSprite3D || sprite == _selectedSprite)
+                {
+                    DrawSprite3DSelection(sprite, sector);
+                }
+            }
+
+            // Restore depth state
+            GraphicsDevice.DepthStencilState = originalDepthStencilState;
+        }
+
+        private void DrawSprite3DSelection(Sprite sprite, Sector sector)
+        {
+            if (!sprite.Visible) return;
+
+            float spriteSize = 32f * sprite.Scale.X; // Base size scaled by sprite's scale
+            Vector3 spritePosition;
+
+            // Position sprite based on alignment - same as DrawSprite3D
+            switch (sprite.Alignment)
+            {
+                case SpriteAlignment.Floor:
+                    spritePosition = new Vector3(sprite.Position.X, sector.FloorHeight + sprite.Height, -sprite.Position.Y);
+                    break;
+                case SpriteAlignment.Wall:
+                    spritePosition = new Vector3(sprite.Position.X, sector.FloorHeight + sprite.Height, -sprite.Position.Y);
+                    break;
+                case SpriteAlignment.Face:
+                default:
+                    spritePosition = new Vector3(sprite.Position.X, sector.FloorHeight + sprite.Height, -sprite.Position.Y);
+                    break;
+            }
+
+            // Draw selection highlight as a wireframe outline
+            var pitch = sprite.Properties.ContainsKey("Pitch") ? (float)sprite.Properties["Pitch"] : 0f;
+            DrawSpriteSelectionOutline(spritePosition, spriteSize * 1.2f, sprite.Alignment, sprite.Angle, pitch);
+        }
+
+        private void DrawSpriteSelectionOutline(Vector3 position, float size, SpriteAlignment alignment, float yaw, float pitch)
+        {
+            Vector3 cameraToSprite = position - _camera3DPosition;
+            Vector3 right, up;
+
+            // Calculate billboard orientation matching DrawTexturedSpriteBillboard
+            if (alignment == SpriteAlignment.Face)
+            {
+                // Billboard sprite - face camera
+                if (Math.Abs(cameraToSprite.X) < 0.001f && Math.Abs(cameraToSprite.Z) < 0.001f)
+                {
+                    right = Vector3.Right;
+                    up = Vector3.Up;
+                }
+                else
+                {
+                    right = Vector3.Normalize(Vector3.Cross(Vector3.Up, cameraToSprite));
+                    up = Vector3.Up;
+                }
+            }
+            else if (alignment == SpriteAlignment.Wall)
+            {
+                // Wall-aligned sprite - same logic as DrawTexturedSpriteBillboard
+                float wallAngleRad = MathHelper.ToRadians(yaw);
+                Vector3 wallTangent = Vector3.Normalize(new Vector3((float)Math.Cos(wallAngleRad), 0, -(float)Math.Sin(wallAngleRad)));
+                Vector3 wallNormal = Vector3.Normalize(Vector3.Cross(Vector3.Up, wallTangent));
+
+                // For wall sprites: right = tangent (parallel to wall), up = Vector3.Up
+                right = wallTangent;
+                up = Vector3.Up;
+            }
+            else // Floor alignment
+            {
+                // Floor-aligned sprite - lies flat on ground
+                right = Vector3.Right;
+                up = Vector3.Forward; // Same as DrawTexturedSpriteBillboard
+            }
+
+            // Scale vectors
+            right *= size * 0.5f;
+            up *= size * 0.5f;
+
+            // Calculate quad corners
+            Vector3 topLeft = position - right + up;
+            Vector3 topRight = position + right + up;
+            Vector3 bottomLeft = position - right - up;
+            Vector3 bottomRight = position + right - up;
+
+            // Store original state
+            var originalTexture = _basicEffect.Texture;
+            var originalTextureEnabled = _basicEffect.TextureEnabled;
+            var originalVertexColorEnabled = _basicEffect.VertexColorEnabled;
+
+            // Set up for wireframe selection rendering
+            _basicEffect.Texture = null;
+            _basicEffect.TextureEnabled = false;
+            _basicEffect.VertexColorEnabled = true;
+            _basicEffect.DiffuseColor = Color.White.ToVector3();
+
+            // Create wireframe outline vertices
+            var vertices = new VertexPositionColor[8];
+            Color highlightColor = Color.White * 0.8f;
+
+            // Top edge
+            vertices[0] = new VertexPositionColor(topLeft, highlightColor);
+            vertices[1] = new VertexPositionColor(topRight, highlightColor);
+
+            // Right edge
+            vertices[2] = new VertexPositionColor(topRight, highlightColor);
+            vertices[3] = new VertexPositionColor(bottomRight, highlightColor);
+
+            // Bottom edge
+            vertices[4] = new VertexPositionColor(bottomRight, highlightColor);
+            vertices[5] = new VertexPositionColor(bottomLeft, highlightColor);
+
+            // Left edge
+            vertices[6] = new VertexPositionColor(bottomLeft, highlightColor);
+            vertices[7] = new VertexPositionColor(topLeft, highlightColor);
+
+            // Draw wireframe lines
+            foreach (var pass in _basicEffect.CurrentTechnique.Passes)
+            {
+                pass.Apply();
+                GraphicsDevice.DrawUserPrimitives(PrimitiveType.LineList, vertices, 0, 4);
+            }
+
+            // Restore original state
+            _basicEffect.Texture = originalTexture;
+            _basicEffect.TextureEnabled = originalTextureEnabled;
+            _basicEffect.VertexColorEnabled = originalVertexColorEnabled;
         }
 
         private void Draw3DNestedSector(Sector sector, HashSet<int> renderedSectors)
@@ -6644,14 +7129,8 @@ namespace BuildEditor
 
             renderedSectors.Add(sector.Id);
 
-            // Draw this sector's geometry
+            // Draw this sector's geometry only (sprites will be rendered later sorted by distance)
             Draw3DFloorCeiling(sector);
-
-            // Draw sprites in this sector
-            foreach (var sprite in sector.Sprites)
-            {
-                DrawSprite3D(sprite, sector);
-            }
 
             var wallColor = GetTextureColor(sector.WallTexture);
 
@@ -7417,13 +7896,17 @@ namespace BuildEditor
         {
             if (!sprite.Visible) return;
 
-            // Get sprite color based on tag
-            Color spriteColor = sprite.Tag switch
+            // Get sprite texture (only from SpriteTextures folder)
+            Texture2D spriteTexture = null;
+            string textureName = sprite.TextureName;
+
+            // Only use textures from SpriteTextures folder
+            if (string.IsNullOrEmpty(textureName) || !textureName.StartsWith("SpriteTextures/"))
             {
-                SpriteTag.Switch => Color.Magenta,
-                SpriteTag.Decoration => Color.Cyan,
-                _ => Color.White
-            };
+                textureName = "SpriteTextures/Dudeman"; // Default to Dudeman sprite
+            }
+
+            _spriteTextures.TryGetValue(textureName, out spriteTexture);
 
             float spriteSize = 32f * sprite.Scale.X; // Base size scaled by sprite's scale
             Vector3 spritePosition;
@@ -7451,17 +7934,26 @@ namespace BuildEditor
                     break;
             }
 
-            // Draw sprite as a simple billboard quad with yaw and pitch rotation
+            // Draw sprite as a textured billboard quad with yaw and pitch rotation
             var pitch = sprite.Properties.ContainsKey("Pitch") ? (float)sprite.Properties["Pitch"] : 0f;
-            // Debug: show sprite info before rendering
-            
-            DrawSpriteBillboard(spritePosition, spriteSize, spriteColor, sprite.Alignment, sprite.Angle, pitch);
 
-            // Draw selection highlight in 3D - DISABLED
-            // if (_selectedSprite == sprite)
-            // {
-            //     DrawSpriteBillboard(spritePosition, spriteSize + 8, Color.White * 0.5f, SpriteAlignment.Face);
-            // }
+            if (spriteTexture != null)
+            {
+                DrawTexturedSpriteBillboard(spritePosition, spriteSize, spriteTexture, sprite.Alignment, sprite.Angle, pitch);
+            }
+            else
+            {
+                // Fallback to colored sprite if no texture available
+                Color spriteColor = sprite.Tag switch
+                {
+                    SpriteTag.Switch => Color.Magenta,
+                    SpriteTag.Decoration => Color.Cyan,
+                    _ => Color.White
+                };
+                DrawSpriteBillboard(spritePosition, spriteSize, spriteColor, sprite.Alignment, sprite.Angle, pitch);
+            }
+
+            // Selection highlighting is now handled in DrawSortedSprites()
         }
 
         private void DrawSpriteBillboard(Vector3 position, float size, Color color, SpriteAlignment alignment,
@@ -7479,25 +7971,26 @@ namespace BuildEditor
             }
             else if (alignment == SpriteAlignment.Wall)
             {
-                // Wall-aligned sprite - compute tangent (along wall) and normal (perpendicular to wall)
+                // Wall-aligned sprite - like a painting hanging on the wall (perpendicular to camera view, parallel to wall surface)
                 // yaw represents the wall's direction angle from Atan2(dy, dx)
                 float wallAngleRad = MathHelper.ToRadians(yaw);
-                
+
                 // Map from 2D map coordinates to 3D rendering space
                 // Build engine: 2D map (x,y) → 3D space (x, Y=up, -z for proper orientation)
                 // The yaw angle comes from Atan2(dy, dx) in 2D map space
-                
+
                 // Wall tangent vector (along the wall direction) - map 2D to 3D with Z negated
                 Vector3 wallTangent = Vector3.Normalize(new Vector3((float)Math.Cos(wallAngleRad), 0, -(float)Math.Sin(wallAngleRad)));
-                
+
                 // Wall normal vector (perpendicular to wall, pointing outward) using correct cross product order
                 Vector3 wallNormal = Vector3.Normalize(Vector3.Cross(Vector3.Up, wallTangent));
-                
-                
-                // Use tangent for sprite's right axis and normal for positioning offset
+
+
+                // For wall sprites: right = tangent (parallel to wall), up = Vector3.Up
+                // This makes the sprite lie flat against the wall surface
                 right = wallTangent;
                 up = Vector3.Up;
-                
+
                 // Offset sprite position slightly outward along wall normal to avoid z-fighting
                 position = position + wallNormal * 0.05f;
             }
@@ -7558,6 +8051,141 @@ namespace BuildEditor
                 pass.Apply();
                 GraphicsDevice.DrawUserIndexedPrimitives(PrimitiveType.TriangleList, vertices, 0, 4, indices, 0, 2);
             }
+        }
+
+        private void DrawTexturedSpriteBillboard(Vector3 position, float size, Texture2D texture, SpriteAlignment alignment,
+            float yaw = 0f, float pitch = 0f)
+        {
+            Vector3 cameraToSprite = position - _camera3DPosition;
+            Vector3 right, up;
+
+            if (alignment == SpriteAlignment.Face)
+            {
+                // Billboard - always faces camera
+                Vector3 forward = Vector3.Normalize(cameraToSprite);
+                right = Vector3.Cross(Vector3.Up, forward);
+
+                // Handle the case where forward is parallel to Up (looking straight up/down)
+                if (right.Length() < 0.001f)
+                {
+                    right = Vector3.Right;
+                }
+                else
+                {
+                    right.Normalize();
+                }
+
+                up = Vector3.Cross(forward, right);
+                up.Normalize();
+            }
+            else if (alignment == SpriteAlignment.Wall)
+            {
+                // Wall-aligned sprite - like a painting hanging on the wall (perpendicular to camera view, parallel to wall surface)
+                float wallAngleRad = MathHelper.ToRadians(yaw);
+                Vector3 wallTangent = Vector3.Normalize(new Vector3((float)Math.Cos(wallAngleRad), 0, -(float)Math.Sin(wallAngleRad)));
+                Vector3 wallNormal = Vector3.Normalize(Vector3.Cross(Vector3.Up, wallTangent));
+
+                // For wall sprites: right = tangent (parallel to wall), up = Vector3.Up
+                // This makes the sprite lie flat against the wall surface
+                right = wallTangent;
+                up = Vector3.Up;
+                position = position + wallNormal * 0.05f;
+            }
+            else // Floor alignment
+            {
+                // Floor-aligned sprite - lies flat on ground
+                right = Vector3.Right;
+                up = Vector3.Forward; // In XNA/MonoGame, Forward is -Z, but we want +Z for proper orientation
+            }
+
+            // Apply rotations (skip for wall sprites which already have correct orientation)
+            if ((yaw != 0f || pitch != 0f) && alignment != SpriteAlignment.Wall)
+            {
+                // Apply yaw rotation (around Y-axis)
+                if (yaw != 0f)
+                {
+                    var yawRad = MathHelper.ToRadians(yaw);
+                    var cosYaw = (float)Math.Cos(yawRad);
+                    var sinYaw = (float)Math.Sin(yawRad);
+
+                    var originalRight = right;
+                    right = new Vector3(
+                        originalRight.X * cosYaw - originalRight.Z * sinYaw,
+                        originalRight.Y,
+                        originalRight.X * sinYaw + originalRight.Z * cosYaw
+                    );
+                }
+
+                // Apply pitch rotation (around X-axis)
+                if (pitch != 0f)
+                {
+                    var pitchRad = MathHelper.ToRadians(pitch);
+                    var cosPitch = (float)Math.Cos(pitchRad);
+                    var sinPitch = (float)Math.Sin(pitchRad);
+
+                    var originalUp = up;
+                    up = new Vector3(
+                        originalUp.X,
+                        originalUp.Y * cosPitch - originalUp.Z * sinPitch,
+                        originalUp.Y * sinPitch + originalUp.Z * cosPitch
+                    );
+                }
+            }
+
+            float halfSize = size / 2;
+
+            // Create textured vertices using original position (no offset)
+            var vertices = new VertexPositionTexture[4];
+            vertices[0] = new VertexPositionTexture(position - right * halfSize - up * halfSize, new Vector2(0, 1)); // Bottom left
+            vertices[1] = new VertexPositionTexture(position + right * halfSize - up * halfSize, new Vector2(1, 1)); // Bottom right
+            vertices[2] = new VertexPositionTexture(position - right * halfSize + up * halfSize, new Vector2(0, 0)); // Top left
+            vertices[3] = new VertexPositionTexture(position + right * halfSize + up * halfSize, new Vector2(1, 0)); // Top right
+
+            var indices = new short[] { 0, 2, 1, 1, 2, 3 };
+
+            // Save original BasicEffect state
+            var originalTexture = _basicEffect.Texture;
+            var originalTextureEnabled = _basicEffect.TextureEnabled;
+            var originalBlendState = GraphicsDevice.BlendState;
+            var originalDepthStencilState = GraphicsDevice.DepthStencilState;
+
+            // Set texture on basic effect
+            _basicEffect.Texture = texture;
+            _basicEffect.TextureEnabled = true;
+
+            // Enable alpha blending for sprite transparency
+            GraphicsDevice.BlendState = BlendState.AlphaBlend;
+
+            // Use permissive depth testing for sprites - allow them to render even when close to walls
+            var depthStencilState = new DepthStencilState
+            {
+                DepthBufferEnable = true,
+                DepthBufferWriteEnable = false,
+                DepthBufferFunction = CompareFunction.LessEqual
+            };
+            GraphicsDevice.DepthStencilState = depthStencilState;
+
+            // Ensure no culling for sprites
+            var originalRasterizerState = GraphicsDevice.RasterizerState;
+            var rasterizerState = new RasterizerState
+            {
+                CullMode = CullMode.None,
+                FillMode = FillMode.Solid
+            };
+            GraphicsDevice.RasterizerState = rasterizerState;
+
+            foreach (var pass in _basicEffect.CurrentTechnique.Passes)
+            {
+                pass.Apply();
+                GraphicsDevice.DrawUserIndexedPrimitives(PrimitiveType.TriangleList, vertices, 0, 4, indices, 0, 2);
+            }
+
+            // Restore all original states
+            GraphicsDevice.BlendState = originalBlendState;
+            GraphicsDevice.DepthStencilState = originalDepthStencilState;
+            GraphicsDevice.RasterizerState = originalRasterizerState;
+            _basicEffect.Texture = originalTexture;
+            _basicEffect.TextureEnabled = originalTextureEnabled;
         }
 
         private bool IsPointInSector(Vector2 point, Sector sector)
@@ -7930,6 +8558,432 @@ namespace BuildEditor
             // Nested sectors use cyan color
             return Color.Cyan;
         }
+
+        // ================== SAVE/LOAD SYSTEM ==================
+
+        /// <summary>
+        /// Save the current level to a JSON file
+        /// </summary>
+        /// <param name="filePath">Full path to save the file (e.g., "levels/test_level.json")</param>
+        /// <param name="levelName">Optional name for the level (defaults to filename)</param>
+        /// <param name="description">Optional description for the level</param>
+        /// <returns>True if save successful, false if failed</returns>
+        public bool SaveLevel(string filePath, string levelName = null, string description = "")
+        {
+            try
+            {
+                // Create level data container
+                var levelData = new LevelData
+                {
+                    Name = levelName ?? Path.GetFileNameWithoutExtension(filePath),
+                    Description = description,
+                    CreatedDate = DateTime.Now,
+                    ModifiedDate = DateTime.Now,
+                    Version = "1.0",
+                    Sectors = new List<Sector>(_sectors),
+                    PlayerPosition = _hasPlayerPosition ? _playerPosition : (Vector2?)null,
+                    HasPlayerPosition = _hasPlayerPosition,
+                    NextSectorId = _nextSectorId,
+                    NextSpriteId = GetNextSpriteId()
+                };
+
+                // Ensure directory exists
+                var directory = Path.GetDirectoryName(filePath);
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                }
+
+                // Serialize to JSON with nice formatting
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    WriteIndented = true,
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    Converters = { new JsonStringEnumConverter(), new Vector2JsonConverter() }
+                };
+
+                string jsonString = JsonSerializer.Serialize(levelData, jsonOptions);
+                File.WriteAllText(filePath, jsonString);
+
+                Console.WriteLine($"Level saved successfully: {filePath}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to save level: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Load a level from a JSON file
+        /// </summary>
+        /// <param name="filePath">Full path to the level file</param>
+        /// <returns>True if load successful, false if failed</returns>
+        public bool LoadLevel(string filePath)
+        {
+            try
+            {
+                if (!File.Exists(filePath))
+                {
+                    Console.WriteLine($"Level file not found: {filePath}");
+                    return false;
+                }
+
+                string jsonString = File.ReadAllText(filePath);
+
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    Converters = { new JsonStringEnumConverter(), new Vector2JsonConverter() }
+                };
+
+                var levelData = JsonSerializer.Deserialize<LevelData>(jsonString, jsonOptions);
+                if (levelData == null)
+                {
+                    Console.WriteLine("Failed to deserialize level data");
+                    return false;
+                }
+
+                // Clear current level
+                ClearLevel();
+
+                // Load level data
+                _sectors.AddRange(levelData.Sectors);
+                if (levelData.HasPlayerPosition && levelData.PlayerPosition.HasValue)
+                {
+                    _playerPosition = levelData.PlayerPosition.Value;
+                    _hasPlayerPosition = true;
+                }
+                else
+                {
+                    _hasPlayerPosition = false;
+                }
+                _nextSectorId = levelData.NextSectorId;
+
+                // Rebuild sector relationships and validate data
+                ValidateAndFixLoadedLevel();
+
+                Console.WriteLine($"Level loaded successfully: {levelData.Name}");
+                Console.WriteLine($"  Description: {levelData.Description}");
+                Console.WriteLine($"  Sectors: {_sectors.Count}");
+                Console.WriteLine($"  Total Sprites: {_sectors.Sum(s => s.Sprites.Count)}");
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Failed to load level: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Create a new empty level
+        /// </summary>
+        public void NewLevel()
+        {
+            ClearLevel();
+            Console.WriteLine("New level created");
+        }
+
+        /// <summary>
+        /// Clear all level data
+        /// </summary>
+        private void ClearLevel()
+        {
+            _sectors.Clear();
+            _selectedSector = null;
+            _selectedWall = null;
+            _selectedSprite = null;
+            _playerPosition = Vector2.Zero;
+            _hasPlayerPosition = false;
+            _nextSectorId = 0;
+        }
+
+        /// <summary>
+        /// Validate and fix any issues with loaded level data
+        /// </summary>
+        private void ValidateAndFixLoadedLevel()
+        {
+            // Fix sector IDs if needed
+            var maxSectorId = _sectors.Count > 0 ? _sectors.Max(s => s.Id) : -1;
+            if (_nextSectorId <= maxSectorId)
+            {
+                _nextSectorId = maxSectorId + 1;
+            }
+
+            // Validate nested sector references
+            foreach (var sector in _sectors)
+            {
+                if (sector.IsNested && sector.ParentSectorId.HasValue)
+                {
+                    var parentExists = _sectors.Any(s => s.Id == sector.ParentSectorId.Value);
+                    if (!parentExists)
+                    {
+                        Console.WriteLine($"Warning: Sector {sector.Id} references non-existent parent {sector.ParentSectorId.Value}");
+                        // Fix by making it independent
+                        sector.IsNested = false;
+                        sector.ParentSectorId = null;
+                        sector.SectorType = SectorType.Independent;
+                    }
+                }
+
+                // Fix sprite IDs and sector references
+                foreach (var sprite in sector.Sprites)
+                {
+                    sprite.SectorId = sector.Id; // Ensure sprite knows its sector
+                }
+
+                // Validate wall adjacent sector references
+                foreach (var wall in sector.Walls)
+                {
+                    if (wall.IsTwoSided && wall.AdjacentSectorId.HasValue)
+                    {
+                        var adjacentExists = _sectors.Any(s => s.Id == wall.AdjacentSectorId.Value);
+                        if (!adjacentExists)
+                        {
+                            Console.WriteLine($"Warning: Wall references non-existent adjacent sector {wall.AdjacentSectorId.Value}");
+                            // Fix by making it one-sided
+                            wall.IsTwoSided = false;
+                            wall.AdjacentSectorId = null;
+                        }
+                    }
+                }
+            }
+        }
+
+        /// <summary>
+        /// Get the next available sprite ID across all sectors
+        /// </summary>
+        private int GetNextSpriteId()
+        {
+            var maxSpriteId = 0;
+            foreach (var sector in _sectors)
+            {
+                foreach (var sprite in sector.Sprites)
+                {
+                    if (sprite.Id > maxSpriteId)
+                        maxSpriteId = sprite.Id;
+                }
+            }
+            return maxSpriteId + 1;
+        }
+
+        /// <summary>
+        /// Quick save current level to default location
+        /// </summary>
+        public bool QuickSave()
+        {
+            var filePath = Path.Combine("levels", "quicksave.json");
+            return SaveLevel(filePath, "QuickSave", "Automatically saved level");
+        }
+
+        /// <summary>
+        /// Quick load from default location
+        /// </summary>
+        public bool QuickLoad()
+        {
+            var filePath = Path.Combine("levels", "quicksave.json");
+            return LoadLevel(filePath);
+        }
+
+        /// <summary>
+        /// List all available level files in the levels directory
+        /// </summary>
+        /// <returns>Array of level file paths</returns>
+        public string[] GetAvailableLevels()
+        {
+            var levelsDir = "levels";
+            if (!Directory.Exists(levelsDir))
+            {
+                Directory.CreateDirectory(levelsDir);
+                return new string[0];
+            }
+
+            return Directory.GetFiles(levelsDir, "*.json")
+                           .OrderBy(f => File.GetLastWriteTime(f))
+                           .Reverse()
+                           .ToArray();
+        }
+
+        /// <summary>
+        /// Get level info without fully loading it
+        /// </summary>
+        /// <param name="filePath">Path to level file</param>
+        /// <returns>Level metadata or null if failed</returns>
+        public LevelData GetLevelInfo(string filePath)
+        {
+            try
+            {
+                if (!File.Exists(filePath))
+                    return null;
+
+                string jsonString = File.ReadAllText(filePath);
+                var jsonOptions = new JsonSerializerOptions
+                {
+                    PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
+                    Converters = { new JsonStringEnumConverter(), new Vector2JsonConverter() }
+                };
+
+                return JsonSerializer.Deserialize<LevelData>(jsonString, jsonOptions);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Toggle the save/load window visibility
+        /// </summary>
+        public void ToggleSaveLoadWindow()
+        {
+            _saveLoadWindowVisible = !_saveLoadWindowVisible;
+            _saveLoadWindow.Visible = _saveLoadWindowVisible;
+
+            if (_saveLoadWindowVisible)
+            {
+                _statusLabel.Text = "Level Manager opened (Ctrl+O to close)";
+                // Refresh the level info when opened
+                var levels = GetAvailableLevels();
+                // Find the level info label in the window and update it
+                UpdateLevelInfoInWindow(levels.Length);
+            }
+            else
+            {
+                _statusLabel.Text = "Level Manager closed";
+            }
+        }
+
+        /// <summary>
+        /// Update the level count in the window
+        /// </summary>
+        private void UpdateLevelInfoInWindow(int levelCount)
+        {
+            // This is a simplified version - in a real implementation you'd store a reference to the label
+            Console.WriteLine($"Found {levelCount} levels");
+        }
+
+        /// <summary>
+        /// Refresh the level list in the Level Manager window
+        /// </summary>
+        private void RefreshLevelList()
+        {
+            if (_levelListPanel == null) return;
+
+            _levelListPanel.Widgets.Clear();
+
+            var levels = GetAvailableLevels();
+            if (levels.Length == 0)
+            {
+                var noLevelsLabel = new Label
+                {
+                    Text = "No levels found. Create and save a level first.",
+                    TextColor = Color.LightGray
+                };
+                _levelListPanel.Widgets.Add(noLevelsLabel);
+                return;
+            }
+
+            var levelGrid = new Grid
+            {
+                RowSpacing = 2,
+                ColumnSpacing = 5
+            };
+
+            // Three columns: Level name, Load button, Delete button
+            levelGrid.ColumnsProportions.Add(new Proportion(ProportionType.Fill)); // Level name
+            levelGrid.ColumnsProportions.Add(new Proportion(ProportionType.Auto)); // Load button
+            levelGrid.ColumnsProportions.Add(new Proportion(ProportionType.Auto)); // Delete button
+
+            for (int i = 0; i < levels.Length; i++)
+            {
+                levelGrid.RowsProportions.Add(new Proportion(ProportionType.Auto));
+
+                var levelPath = levels[i];
+                var levelName = Path.GetFileNameWithoutExtension(levelPath);
+
+                // Level name label
+                var nameLabel = new Label
+                {
+                    Text = levelName,
+                    TextColor = Color.White,
+                    VerticalAlignment = VerticalAlignment.Center
+                };
+                levelGrid.Widgets.Add(nameLabel);
+                Grid.SetColumn(nameLabel, 0);
+                Grid.SetRow(nameLabel, i);
+
+                // Load button
+                var loadButton = new Button
+                {
+                    Content = new Label { Text = "Load", TextColor = Color.White },
+                    Width = 50
+                };
+                var currentLevelPath = levelPath; // Capture for closure
+                loadButton.Click += (s, e) => {
+                    if (LoadLevel(currentLevelPath))
+                    {
+                        _statusLabel.Text = $"Loaded: {Path.GetFileNameWithoutExtension(currentLevelPath)}";
+                        ToggleSaveLoadWindow(); // Close window after loading
+                    }
+                    else
+                    {
+                        _statusLabel.Text = "Load failed!";
+                    }
+                };
+                levelGrid.Widgets.Add(loadButton);
+                Grid.SetColumn(loadButton, 1);
+                Grid.SetRow(loadButton, i);
+
+                // Delete button
+                var deleteButton = new Button
+                {
+                    Content = new Label { Text = "Delete", TextColor = Color.Red },
+                    Width = 60
+                };
+                deleteButton.Click += (s, e) => {
+                    if (DeleteLevel(currentLevelPath))
+                    {
+                        _statusLabel.Text = $"Deleted: {Path.GetFileNameWithoutExtension(currentLevelPath)}";
+                        RefreshLevelList(); // Refresh list after deletion
+                    }
+                    else
+                    {
+                        _statusLabel.Text = "Delete failed!";
+                    }
+                };
+                levelGrid.Widgets.Add(deleteButton);
+                Grid.SetColumn(deleteButton, 2);
+                Grid.SetRow(deleteButton, i);
+            }
+
+            _levelListPanel.Widgets.Add(levelGrid);
+        }
+
+        /// <summary>
+        /// Delete a level file
+        /// </summary>
+        /// <param name="filePath">Path to the level file to delete</param>
+        /// <returns>True if successful</returns>
+        public bool DeleteLevel(string filePath)
+        {
+            try
+            {
+                if (File.Exists(filePath))
+                {
+                    File.Delete(filePath);
+                    return true;
+                }
+                return false;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error deleting level: {ex.Message}");
+                return false;
+            }
+        }
     }
 
 
@@ -7969,7 +9023,9 @@ namespace BuildEditor
     public enum SpriteTag
     {
         Decoration, // Static decorative sprites
-        Switch // Switch/button for activating doors/lifts - FUNCTIONAL
+        Switch, // Switch/button for activating doors/lifts - FUNCTIONAL
+        Enemy, // Enemy sprites
+        Item // Pickup items, weapons, health, etc.
     }
 
     public class Sprite
@@ -7978,7 +9034,6 @@ namespace BuildEditor
         public Vector2 Position { get; set; }
         public float Angle { get; set; } = 0f; // Rotation in degrees
         public Vector2 Scale { get; set; } = new Vector2(1f, 1f);
-        public int Palette { get; set; } = 0; // For different color variations
         public SpriteAlignment Alignment { get; set; } = SpriteAlignment.Face;
         public SpriteTag Tag { get; set; } = SpriteTag.Decoration;
         public string TextureName { get; set; } = "Default";
