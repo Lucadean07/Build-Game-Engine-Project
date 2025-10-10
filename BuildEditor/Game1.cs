@@ -66,6 +66,7 @@ namespace BuildEditor
         private Texture2D _pixelTexture;
         private Dictionary<string, Texture2D> _spriteTextures;
         private Dictionary<string, Texture2D> _geometryTextures;
+        private Dictionary<int, Color> _sectorLightingCache = new Dictionary<int, Color>();
 
         private MouseState _previousMouseState;
         private KeyboardState _previousKeyboardState;
@@ -235,6 +236,21 @@ namespace BuildEditor
         private TextBox _ceilingUVScaleXBox, _ceilingUVScaleYBox;
         private TextBox _wallUVScaleXBox, _wallUVScaleYBox;
         private TextBox _floorShadingBox, _ceilingShadingBox, _wallShadingBox;
+
+        // Lighting Editor Window
+        private Window _lightingEditorWindow;
+        private bool _lightingEditorVisible = false;
+        private TextBox _lightLevelBox;
+        private TextBox _visibilityBox;
+        private CheckButton _coloredLightingCheck;
+        private ComboBox _lightingModeCombo;
+        private ComboBox _lightColorCombo;
+
+        // Wall Properties Editor Window
+        private Window _wallEditorWindow;
+        private bool _wallEditorVisible = false;
+        private TextBox _wallShadeBox;
+        private CheckButton _wallOverrideShadeCheck;
 
         // Sprite editor UI fields
         private TextBox _spritePositionXBox, _spritePositionYBox;
@@ -498,7 +514,9 @@ namespace BuildEditor
             _desktop.Widgets.Add(_toolsPanel);
 
             SetupSectorPropertiesWindow();
+            SetupWallEditorWindow();
             SetupTextureEditorWindow();
+            SetupLightingEditorWindow();
             SetupSpriteEditorWindow();
 
             // Status Panel
@@ -655,7 +673,7 @@ namespace BuildEditor
                 Left = 300,
                 Top = 100,
                 Width = 320,
-                Height = 280,
+                Height = 350,
                 Visible = false // Initially hidden
             };
 
@@ -806,6 +824,33 @@ namespace BuildEditor
             Grid.SetColumn(textureEditorButton, 0);
             Grid.SetColumnSpan(textureEditorButton, 4);
 
+            // Lighting Editor Button
+            var lightingEditorButton = new Button { Content = new Label { Text = "Open Lighting Editor" }, Width = 150 };
+            lightingEditorButton.Click += (s, e) =>
+            {
+                _lightingEditorVisible = !_lightingEditorVisible;
+                UpdateLightingEditor();
+            };
+            propertiesGrid.Widgets.Add(lightingEditorButton);
+            Grid.SetRow(lightingEditorButton, 10);
+            Grid.SetColumn(lightingEditorButton, 0);
+            Grid.SetColumnSpan(lightingEditorButton, 4);
+
+            // Wall Editor Button
+            var wallEditorButton = new TextButton { Text = "Wall Properties (W)" };
+            wallEditorButton.Click += (s, e) =>
+            {
+                if (_selectedWall != null)
+                {
+                    _wallEditorVisible = !_wallEditorVisible;
+                    UpdateWallEditor();
+                }
+            };
+            propertiesGrid.Widgets.Add(wallEditorButton);
+            Grid.SetRow(wallEditorButton, 11);
+            Grid.SetColumn(wallEditorButton, 0);
+            Grid.SetColumnSpan(wallEditorButton, 4);
+
             // Close button
             var closeButton = new Button { Content = new Label { Text = "Close" }, Width = 60 };
             closeButton.Click += (s, e) =>
@@ -814,7 +859,7 @@ namespace BuildEditor
                 _sectorPropertiesWindow.Visible = false;
             };
             propertiesGrid.Widgets.Add(closeButton);
-            Grid.SetRow(closeButton, 10);
+            Grid.SetRow(closeButton, 11);
             Grid.SetColumn(closeButton, 1);
 
             _sectorPropertiesWindow.Content = propertiesGrid;
@@ -950,6 +995,173 @@ namespace BuildEditor
             {
                 _textureEditorWindow.CloseButton.Visible = false;
             }
+        }
+
+        private void SetupLightingEditorWindow()
+        {
+            _lightingEditorWindow = new Window
+            {
+                Title = "Lighting Editor",
+                Left = 1060,
+                Top = 100,
+                Width = 350,
+                Height = 400,
+                Visible = false
+            };
+
+            var scrollPane = new ScrollViewer();
+            var lightingGrid = new Grid
+            {
+                RowSpacing = 3,
+                ColumnSpacing = 5
+            };
+
+            for (int i = 0; i < 20; i++)
+            {
+                lightingGrid.RowsProportions.Add(new Proportion(ProportionType.Auto));
+            }
+            lightingGrid.ColumnsProportions.Add(new Proportion(ProportionType.Auto));
+            lightingGrid.ColumnsProportions.Add(new Proportion(ProportionType.Fill));
+
+            int row = 0;
+
+            // Title
+            var titleLabel = new Label { Text = "Sector Lighting", TextColor = Color.Yellow };
+            lightingGrid.Widgets.Add(titleLabel);
+            Grid.SetRow(titleLabel, row++);
+            Grid.SetColumnSpan(titleLabel, 2);
+
+            // Shade (Build Engine style)
+            var shadeLabel = new Label { Text = "Shade (0=bright, 63=dark):", TextColor = Color.White };
+            lightingGrid.Widgets.Add(shadeLabel);
+            Grid.SetRow(shadeLabel, row);
+            Grid.SetColumn(shadeLabel, 0);
+
+            _lightLevelBox = new TextBox { Text = "0", Width = 100 };
+            lightingGrid.Widgets.Add(_lightLevelBox);
+            Grid.SetRow(_lightLevelBox, row++);
+            Grid.SetColumn(_lightLevelBox, 1);
+
+            // Visibility (fog)
+            var visibilityLabel = new Label { Text = "Visibility (fog):", TextColor = Color.White };
+            lightingGrid.Widgets.Add(visibilityLabel);
+            Grid.SetRow(visibilityLabel, row);
+            Grid.SetColumn(visibilityLabel, 0);
+
+            _visibilityBox = new TextBox { Text = "0", Width = 100 };
+            lightingGrid.Widgets.Add(_visibilityBox);
+            Grid.SetRow(_visibilityBox, row++);
+            Grid.SetColumn(_visibilityBox, 1);
+
+            // Colored Lighting Checkbox
+            _coloredLightingCheck = new CheckButton { Content = new Label { Text = "Enable Colored Lighting" } };
+            lightingGrid.Widgets.Add(_coloredLightingCheck);
+            Grid.SetRow(_coloredLightingCheck, row++);
+            Grid.SetColumnSpan(_coloredLightingCheck, 2);
+
+            // Light Color
+            var lightColorLabel = new Label { Text = "Light Color:", TextColor = Color.White };
+            lightingGrid.Widgets.Add(lightColorLabel);
+            Grid.SetRow(lightColorLabel, row);
+            Grid.SetColumn(lightColorLabel, 0);
+
+            _lightColorCombo = new ComboBox { Width = 100 };
+            _lightColorCombo.Items.Add(new ListItem("White", Color.White));
+            _lightColorCombo.Items.Add(new ListItem("Red", Color.Red));
+            _lightColorCombo.Items.Add(new ListItem("Green", Color.Green));
+            _lightColorCombo.Items.Add(new ListItem("Blue", Color.Blue));
+            _lightColorCombo.Items.Add(new ListItem("Yellow", Color.Yellow));
+            _lightColorCombo.Items.Add(new ListItem("Magenta", Color.Magenta));
+            _lightColorCombo.Items.Add(new ListItem("Cyan", Color.Cyan));
+            _lightColorCombo.Items.Add(new ListItem("Orange", Color.Orange));
+            _lightColorCombo.Items.Add(new ListItem("Purple", Color.Purple));
+            _lightColorCombo.Items.Add(new ListItem("Pink", Color.Pink));
+            _lightColorCombo.SelectedIndex = 0;
+            lightingGrid.Widgets.Add(_lightColorCombo);
+            Grid.SetRow(_lightColorCombo, row++);
+            Grid.SetColumn(_lightColorCombo, 1);
+
+            // Lighting Mode
+            var lightModeLabel = new Label { Text = "Lighting Mode:", TextColor = Color.White };
+            lightingGrid.Widgets.Add(lightModeLabel);
+            Grid.SetRow(lightModeLabel, row);
+            Grid.SetColumn(lightModeLabel, 0);
+
+            _lightingModeCombo = new ComboBox { Width = 100 };
+            _lightingModeCombo.Items.Add(new ListItem("Normal", Color.White));
+            _lightingModeCombo.Items.Add(new ListItem("Strobe", Color.White));
+            _lightingModeCombo.Items.Add(new ListItem("Flicker", Color.White));
+            _lightingModeCombo.Items.Add(new ListItem("Pulse", Color.White));
+            _lightingModeCombo.Items.Add(new ListItem("ColorCycle", Color.White));
+            _lightingModeCombo.SelectedIndex = 0;
+            lightingGrid.Widgets.Add(_lightingModeCombo);
+            Grid.SetRow(_lightingModeCombo, row++);
+            Grid.SetColumn(_lightingModeCombo, 1);
+
+            scrollPane.Content = lightingGrid;
+            _lightingEditorWindow.Content = scrollPane;
+            _desktop.Widgets.Add(_lightingEditorWindow);
+
+            // Event handlers
+            _lightLevelBox.TextChanged += OnLightingPropertyChanged;
+            _visibilityBox.TextChanged += OnLightingPropertyChanged;
+            _coloredLightingCheck.IsCheckedChanged += OnLightingPropertyChanged;
+            _lightingModeCombo.SelectedIndexChanged += OnLightingPropertyChanged;
+            _lightColorCombo.SelectedIndexChanged += OnLightColorChanged;
+        }
+
+        private void SetupWallEditorWindow()
+        {
+            _wallEditorWindow = new Window
+            {
+                Title = "Wall Properties",
+                Left = 20,
+                Top = 400,
+                Width = 280,
+                Height = 180,
+                Visible = false
+            };
+
+            var grid = new Grid
+            {
+                RowSpacing = 8,
+                ColumnSpacing = 8
+            };
+            grid.ColumnsProportions.Add(new Proportion(ProportionType.Auto));
+            grid.ColumnsProportions.Add(new Proportion(ProportionType.Fill));
+
+            int row = 0;
+
+            // Title
+            var titleLabel = new Label { Text = "Wall Shade Properties", TextColor = Color.White };
+            grid.Widgets.Add(titleLabel);
+            Grid.SetRow(titleLabel, row++);
+            Grid.SetColumnSpan(titleLabel, 2);
+
+            // Wall Shade
+            var wallShadeLabel = new Label { Text = "Shade Offset:", TextColor = Color.White };
+            grid.Widgets.Add(wallShadeLabel);
+            Grid.SetRow(wallShadeLabel, row);
+            Grid.SetColumn(wallShadeLabel, 0);
+
+            _wallShadeBox = new TextBox { Text = "0", Width = 100 };
+            grid.Widgets.Add(_wallShadeBox);
+            Grid.SetRow(_wallShadeBox, row++);
+            Grid.SetColumn(_wallShadeBox, 1);
+
+            // Override Shade Checkbox
+            _wallOverrideShadeCheck = new CheckButton { Content = new Label { Text = "Override Sector Shade" } };
+            grid.Widgets.Add(_wallOverrideShadeCheck);
+            Grid.SetRow(_wallOverrideShadeCheck, row++);
+            Grid.SetColumnSpan(_wallOverrideShadeCheck, 2);
+
+            var scrollPane = new ScrollViewer { Content = grid };
+            _wallEditorWindow.Content = scrollPane;
+            _desktop.Widgets.Add(_wallEditorWindow);
+
+            // Event handlers
+            _wallShadeBox.TextChanged += OnWallPropertyChanged;
+            _wallOverrideShadeCheck.IsCheckedChanged += OnWallPropertyChanged;
         }
 
         private void SetupSpriteEditorWindow()
@@ -1675,6 +1887,106 @@ namespace BuildEditor
             }
         }
 
+        private void OnLightingPropertyChanged(object sender, EventArgs args)
+        {
+            if (_selectedSector == null) return;
+
+            // Update lighting properties from UI
+            if (int.TryParse(_lightLevelBox.Text, out int shade))
+                _selectedSector.Shade = Math.Max(0, Math.Min(63, shade));
+
+            if (int.TryParse(_visibilityBox.Text, out int visibility))
+                _selectedSector.Visibility = Math.Max(0, visibility);
+
+            _selectedSector.HasColoredLighting = _coloredLightingCheck.IsChecked;
+
+            if (_lightingModeCombo.SelectedIndex >= 0)
+            {
+                _selectedSector.LightingMode = (LightingMode)_lightingModeCombo.SelectedIndex;
+            }
+        }
+
+        private void OnLightColorChanged(object sender, EventArgs args)
+        {
+            if (_selectedSector == null || !_lightColorCombo.SelectedIndex.HasValue || _lightColorCombo.SelectedIndex.Value < 0) return;
+
+            // Map dropdown selection to color
+            var colors = new[] { Color.White, Color.Red, Color.Green, Color.Blue, Color.Yellow, Color.Magenta, Color.Cyan, Color.Orange, Color.Purple, Color.Pink };
+            _selectedSector.LightColor = colors[_lightColorCombo.SelectedIndex.Value];
+        }
+
+        private void OnWallPropertyChanged(object sender, EventArgs args)
+        {
+            if (_selectedWall == null) return;
+
+            // Update wall shade properties from UI
+            if (int.TryParse(_wallShadeBox.Text, out int shade))
+            {
+                _selectedWall.Shade = shade;
+                Console.WriteLine($"Wall shade set to: {shade}");
+            }
+
+            _selectedWall.OverrideShade = _wallOverrideShadeCheck.IsChecked;
+            Console.WriteLine($"Wall override shade: {_selectedWall.OverrideShade}");
+        }
+
+        private void UpdateWallEditor()
+        {
+            if (_selectedWall != null && _wallEditorVisible)
+            {
+                _wallEditorWindow.Visible = true;
+                _wallEditorWindow.Title = "Wall Properties";
+
+                _wallShadeBox.Text = _selectedWall.Shade.ToString();
+                _wallOverrideShadeCheck.IsChecked = _selectedWall.OverrideShade;
+            }
+            else
+            {
+                _wallEditorWindow.Visible = false;
+            }
+        }
+
+        private void UpdateLightingEditor()
+        {
+            if (_selectedSector != null && _lightingEditorVisible)
+            {
+                _lightingEditorWindow.Visible = true;
+                _lightingEditorWindow.Title = $"Lighting Editor - Sector {_selectedSector.Id}";
+
+                _lightLevelBox.Text = _selectedSector.Shade.ToString();
+                _visibilityBox.Text = _selectedSector.Visibility.ToString();
+                _coloredLightingCheck.IsChecked = _selectedSector.HasColoredLighting;
+                _lightingModeCombo.SelectedIndex = (int)_selectedSector.LightingMode;
+
+                // Update color dropdown
+                var color = _selectedSector.LightColor;
+                var colors = new[] { Color.White, Color.Red, Color.Green, Color.Blue, Color.Yellow, Color.Magenta, Color.Cyan, Color.Orange, Color.Purple, Color.Pink };
+                for (int i = 0; i < colors.Length; i++)
+                {
+                    if (colors[i] == color)
+                    {
+                        _lightColorCombo.SelectedIndex = i;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                _lightingEditorWindow.Visible = false;
+            }
+        }
+
+        private string GetColorName(Color color)
+        {
+            if (color == Color.White) return "White";
+            if (color == Color.Red) return "Red";
+            if (color == Color.Green) return "Green";
+            if (color == Color.Blue) return "Blue";
+            if (color == Color.Yellow) return "Yellow";
+            if (color == Color.Magenta) return "Magenta";
+            if (color == Color.Cyan) return "Cyan";
+            return "Custom";
+        }
 
         private void OnSpritePropertyChanged(object sender, EventArgs args)
         {
@@ -4003,6 +4315,22 @@ namespace BuildEditor
             if (keyboardState.IsKeyDown(Keys.F) && !_previousKeyboardState.IsKeyDown(Keys.F) && _is3DMode)
                 _wireframeMode = !_wireframeMode;
 
+            // L key to toggle lighting editor (when sector is selected)
+            if (keyboardState.IsKeyDown(Keys.L) && !_previousKeyboardState.IsKeyDown(Keys.L) && _selectedSector != null)
+            {
+                _lightingEditorVisible = !_lightingEditorVisible;
+                UpdateLightingEditor();
+                Console.WriteLine($"Lighting editor: {(_lightingEditorVisible ? "OPENED" : "CLOSED")}");
+            }
+
+            // W key to toggle wall properties editor
+            if (keyboardState.IsKeyDown(Keys.W) && !_previousKeyboardState.IsKeyDown(Keys.W) && _selectedWall != null)
+            {
+                _wallEditorVisible = !_wallEditorVisible;
+                UpdateWallEditor();
+                Console.WriteLine($"Wall editor: {(_wallEditorVisible ? "OPENED" : "CLOSED")}");
+            }
+
             // G key behavior depends on context
             if (keyboardState.IsKeyDown(Keys.G) && !_previousKeyboardState.IsKeyDown(Keys.G) && _is3DMode)
             {
@@ -4277,6 +4605,7 @@ namespace BuildEditor
             // Update sector properties panel
             UpdateSectorPropertiesPanel();
             UpdateTextureEditor();
+            UpdateLightingEditor();
             UpdateSpriteEditor();
         }
 
@@ -4440,9 +4769,10 @@ namespace BuildEditor
             
             // Rebuild the sector's walls to incorporate the new vertex
             RebuildWallsForAllSectors();
-            
+
             // Clear wall selection after adding vertex
             _selectedWall = null;
+            _wallEditorVisible = false;
         }
 
         private Sector Get3DSectorUnderCursor(Ray ray)
@@ -4513,8 +4843,10 @@ namespace BuildEditor
                     _playerDragStart = _mouseWorldPosition;
                     _selectedSprite = null; // Clear sprite selection
                     _selectedSector = null; // Clear sector selection
+                    _lightingEditorVisible = false; // Hide lighting editor
                     _selectedVertices.Clear(); // Clear vertex selection
                     _selectedWall = null; // Clear wall selection
+                    _wallEditorVisible = false; // Hide wall editor
                     _spriteEditorVisible = false; // Hide sprite editor
                     _draggingSprite = false; // Stop sprite dragging
                     return;
@@ -4526,6 +4858,7 @@ namespace BuildEditor
                 {
                     _selectedSprite = clickedSprite;
                     _selectedSector = null; // Clear sector selection
+                    _lightingEditorVisible = false; // Hide lighting editor
                     _selectedVertices.Clear(); // Clear vertex selection
                     _playerSelected = false; // Clear player selection
                     _spriteEditorVisible = true; // Show sprite editor
@@ -4551,6 +4884,7 @@ namespace BuildEditor
                     _isDragging = true;
                     _dragStart = clickedVertex.Value;
                     _selectedSector = null; // Clear sector selection
+                    _lightingEditorVisible = false; // Hide lighting editor
                     _selectedSprite = null; // Clear sprite selection
                     _playerSelected = false; // Clear player selection
                     _spriteEditorVisible = false; // Hide sprite editor
@@ -4564,6 +4898,7 @@ namespace BuildEditor
                 {
                     _selectedWall = clickedWall.Value.sector.Walls[clickedWall.Value.wallIndex];
                     _selectedSector = null; // Clear sector selection
+                    _lightingEditorVisible = false; // Hide lighting editor
                     _selectedVertices.Clear(); // Clear vertex selection
                     _selectedSprite = null; // Clear sprite selection
                     _playerSelected = false; // Clear player selection
@@ -4579,6 +4914,7 @@ namespace BuildEditor
                     {
                         _selectedSector = clickedSector;
                         _selectedWall = null; // Clear wall selection
+                        _wallEditorVisible = false; // Hide wall editor
                         _selectedVertices.Clear(); // Clear vertex selection
                         _selectedSprite = null; // Clear sprite selection
                         _playerSelected = false; // Clear player selection
@@ -4592,7 +4928,9 @@ namespace BuildEditor
                     _selectedSprite = null; // Clear sprite selection
                     _spriteEditorVisible = false; // Hide sprite editor
                     _selectedSector = null;
+                    _lightingEditorVisible = false; // Hide lighting editor
                     _selectedWall = null;
+                    _wallEditorVisible = false; // Hide wall editor
                     _playerSelected = false; // Clear player selection
                 }
             }
@@ -4943,17 +5281,197 @@ namespace BuildEditor
             return baseGridSize;
         }
 
+        private Color GetCachedSectorLighting(Sector sector)
+        {
+            if (_sectorLightingCache.TryGetValue(sector.Id, out Color cachedColor))
+            {
+                return cachedColor;
+            }
+            // Fallback to white if not cached (shouldn't happen)
+            return Color.White;
+        }
+
+        private Color CalculateSectorLighting(Sector sector, GameTime gameTime)
+        {
+            var baseColor = ConvertShadeToColor(sector.Shade);
+
+            if (!sector.HasColoredLighting)
+            {
+                return baseColor;
+            }
+
+            var tintedColor = MultiplyColors(baseColor, sector.LightColor);
+
+            switch (sector.LightingMode)
+            {
+                case LightingMode.Normal:
+                    return tintedColor;
+
+                case LightingMode.Strobe:
+                    var strobeOn = ((int)(gameTime.TotalGameTime.TotalSeconds * 4)) % 2 == 0;
+                    return strobeOn ? tintedColor : Color.Multiply(tintedColor, 0.2f);
+
+                case LightingMode.Flicker:
+                    var flickerIntensity = 0.7f + 0.3f * (float)Math.Sin(gameTime.TotalGameTime.TotalSeconds * 15 + sector.Id);
+                    return Color.Multiply(tintedColor, flickerIntensity);
+
+                case LightingMode.Pulse:
+                    var pulseIntensity = 0.5f + 0.5f * (float)Math.Sin(gameTime.TotalGameTime.TotalSeconds * 2);
+                    return Color.Multiply(tintedColor, pulseIntensity);
+
+                case LightingMode.ColorCycle:
+                    var hue = (float)(gameTime.TotalGameTime.TotalSeconds * 0.5) % 1.0f;
+                    var cycleColor = ColorFromHSV(hue, 1.0f, 1.0f);
+                    return MultiplyColors(tintedColor, cycleColor);
+
+                default:
+                    return tintedColor;
+            }
+        }
+
+        private Color ConvertShadeToColor(int shadeValue)
+        {
+            // Build Engine shade: 0 = full brightness, 63 = completely dark
+            // Clamp to valid range
+            shadeValue = Math.Max(0, Math.Min(63, shadeValue));
+
+            // Linear interpolation: shade 0 = 1.0 intensity, shade 63 = 0.0 intensity
+            var intensity = 1.0f - (shadeValue / 63.0f);
+
+            var colorValue = (byte)(255 * intensity);
+            return new Color(colorValue, colorValue, colorValue);
+        }
+
+        private Color ApplyVisibilityFog(Color baseColor, float distance, int visibility)
+        {
+            if (visibility == 0) return baseColor;
+
+            // Build Engine visibility: adds shade based on distance
+            // Formula: shade_adjustment = (distance * visibility) >> 12
+            // This darkens distant surfaces within the sector
+
+            // Calculate additional shade from distance (scaled for our units)
+            int additionalShade = (int)((distance * visibility) / 256.0f);
+
+            // Extract current shade from base color
+            float intensity = baseColor.R / 255.0f;
+            int currentShade = (int)((1.0f - intensity) * 63.0f);
+
+            // Add distance-based shade
+            int finalShade = Math.Min(63, currentShade + additionalShade);
+
+            // Convert back to color while preserving any color tint
+            float newIntensity = 1.0f - (finalShade / 63.0f);
+
+            // Apply intensity while preserving color hue
+            return new Color(
+                (byte)(baseColor.R * newIntensity),
+                (byte)(baseColor.G * newIntensity),
+                (byte)(baseColor.B * newIntensity)
+            );
+        }
+
+        private Color CalculateWallLighting(Sector sector, Wall wall, GameTime gameTime)
+        {
+            // Build Engine: walls can override sector shade or add shade offset
+            int finalShade;
+
+            if (wall.OverrideShade)
+            {
+                // Wall completely overrides sector shade
+                finalShade = wall.Shade;
+            }
+            else
+            {
+                // Wall shade is an offset from sector shade
+                finalShade = sector.Shade + wall.Shade;
+            }
+
+            // Clamp to valid range
+            finalShade = Math.Max(0, Math.Min(63, finalShade));
+
+            var baseColor = ConvertShadeToColor(finalShade);
+
+            // Apply sector lighting effects (strobe, flicker, etc.) if colored lighting is enabled
+            if (sector.HasColoredLighting)
+            {
+                var tintedColor = MultiplyColors(baseColor, sector.LightColor);
+
+                switch (sector.LightingMode)
+                {
+                    case LightingMode.Normal:
+                        return tintedColor;
+
+                    case LightingMode.Strobe:
+                        var strobeOn = ((int)(gameTime.TotalGameTime.TotalSeconds * 4)) % 2 == 0;
+                        return strobeOn ? tintedColor : Color.Multiply(tintedColor, 0.2f);
+
+                    case LightingMode.Flicker:
+                        var flickerIntensity = 0.7f + 0.3f * (float)Math.Sin(gameTime.TotalGameTime.TotalSeconds * 15 + sector.Id);
+                        return Color.Multiply(tintedColor, flickerIntensity);
+
+                    case LightingMode.Pulse:
+                        var pulseIntensity = 0.5f + 0.5f * (float)Math.Sin(gameTime.TotalGameTime.TotalSeconds * 2);
+                        return Color.Multiply(tintedColor, pulseIntensity);
+
+                    case LightingMode.ColorCycle:
+                        var hue = (float)(gameTime.TotalGameTime.TotalSeconds * 0.5) % 1.0f;
+                        var cycleColor = ColorFromHSV(hue, 1.0f, 1.0f);
+                        return MultiplyColors(tintedColor, cycleColor);
+
+                    default:
+                        return tintedColor;
+                }
+            }
+
+            return baseColor;
+        }
+
+        private Color ColorFromHSV(float hue, float saturation, float value)
+        {
+            var c = value * saturation;
+            var x = c * (1 - Math.Abs((hue * 6) % 2 - 1));
+            var m = value - c;
+
+            float r, g, b;
+            if (hue < 1.0f / 6.0f) { r = c; g = x; b = 0; }
+            else if (hue < 2.0f / 6.0f) { r = x; g = c; b = 0; }
+            else if (hue < 3.0f / 6.0f) { r = 0; g = c; b = x; }
+            else if (hue < 4.0f / 6.0f) { r = 0; g = x; b = c; }
+            else if (hue < 5.0f / 6.0f) { r = x; g = 0; b = c; }
+            else { r = c; g = 0; b = x; }
+
+            return new Color((r + m), (g + m), (b + m));
+        }
+
+        private Color MultiplyColors(Color c1, Color c2)
+        {
+            return new Color(
+                (c1.R * c2.R) / 255,
+                (c1.G * c2.G) / 255,
+                (c1.B * c2.B) / 255,
+                (c1.A * c2.A) / 255
+            );
+        }
+
         protected override void Draw(GameTime gameTime)
         {
             GraphicsDevice.Clear(Color.CornflowerBlue);
 
+            // Cache sector lighting for this frame to avoid redundant calculations
+            _sectorLightingCache.Clear();
+            foreach (var sector in _sectors)
+            {
+                _sectorLightingCache[sector.Id] = CalculateSectorLighting(sector, gameTime);
+            }
+
             if (_is3DMode)
             {
-                Draw3DViewport();
+                Draw3DViewport(gameTime);
             }
             else
             {
-                DrawViewport();
+                DrawViewport(gameTime);
             }
 
             DrawUi();
@@ -4966,7 +5484,7 @@ namespace BuildEditor
             _desktop.Render();
         }
 
-        private void DrawViewport()
+        private void DrawViewport(GameTime gameTime)
         {
             var viewportBounds = GetViewportBounds();
             var originalViewport = GraphicsDevice.Viewport;
@@ -4980,7 +5498,7 @@ namespace BuildEditor
                 SamplerState.PointClamp, null, null, null, _camera.GetViewMatrix());
 
             DrawGrid();
-            DrawSectors();
+            DrawSectors(gameTime);
             DrawVertexPlacementFeedback();
             DrawSelectionFeedback();
 
@@ -5023,14 +5541,14 @@ namespace BuildEditor
             }
         }
 
-        private void DrawSectors()
+        private void DrawSectors(GameTime gameTime)
         {
             foreach (var sector in _sectors)
             {
                 foreach (var wall in sector.Walls)
                 {
                     // Determine wall color and thickness based on sector type and two-sided status
-                    Color wallColor = GetWallColorForSector(sector);
+                    Color wallColor = GetWallColorForSector(sector, gameTime);
                     int wallThickness = sector.IsNested ? 1 : 2; // Thinner lines for nested sectors
 
                     // Two-sided walls get a different visual treatment
@@ -5093,7 +5611,7 @@ namespace BuildEditor
                     else
                     {
                         // Use different vertex colors for nested sectors
-                        var vertexColor = sector.IsNested ? GetWallColorForSector(sector) : Color.Yellow;
+                        var vertexColor = sector.IsNested ? GetWallColorForSector(sector, gameTime) : Color.Yellow;
                         var radius = sector.IsNested ? 3f : 4f; // Smaller vertices for nested sectors
                         DrawCircle(vertex, radius, vertexColor);
                     }
@@ -6866,7 +7384,7 @@ namespace BuildEditor
             return false;
         }
 
-        private void Draw3DViewport()
+        private void Draw3DViewport(GameTime gameTime)
         {
             var viewportBounds = GetViewportBounds();
             var originalViewport = GraphicsDevice.Viewport;
@@ -6900,7 +7418,7 @@ namespace BuildEditor
             // Enable depth testing to ensure proper rendering order
             GraphicsDevice.DepthStencilState = DepthStencilState.Default;
 
-            Draw3DSectors();
+            Draw3DSectors(gameTime);
 
             // Draw 3D cursor
             Draw3DCursor();
@@ -6908,20 +7426,20 @@ namespace BuildEditor
             GraphicsDevice.Viewport = originalViewport;
         }
 
-        private void Draw3DSectors()
+        private void Draw3DSectors(GameTime gameTime)
         {
             var renderedSectors = new HashSet<int>();
 
             // First, render all independent (parent) sectors
             foreach (var sector in _sectors.Where(s => !s.IsNested))
             {
-                Draw3DSector(sector, renderedSectors, 0); // Depth 0 for main sectors
+                Draw3DSector(sector, renderedSectors, 0, gameTime); // Depth 0 for main sectors
             }
 
             // Then, render nested sectors with slight height offset to ensure they render on top
             foreach (var sector in _sectors.Where(s => s.IsNested))
             {
-                Draw3DNestedSector(sector, renderedSectors);
+                Draw3DNestedSector(sector, renderedSectors, gameTime);
             }
 
             // Finally, render all sprites sorted by distance (Build Engine style)
@@ -7094,24 +7612,24 @@ namespace BuildEditor
             _basicEffect.VertexColorEnabled = originalVertexColorEnabled;
         }
 
-        private void Draw3DNestedSector(Sector sector, HashSet<int> renderedSectors)
+        private void Draw3DNestedSector(Sector sector, HashSet<int> renderedSectors, GameTime gameTime)
         {
             if (renderedSectors.Contains(sector.Id))
                 return;
 
             renderedSectors.Add(sector.Id);
 
+            // Get cached sector lighting for nested sector
+            var lightingColor = GetCachedSectorLighting(sector);
+
             // Draw nested sector floor/ceiling with slight offset to render on top of parent
-            Draw3DNestedFloorCeiling(sector);
+            Draw3DNestedFloorCeiling(sector, lightingColor);
 
             // Draw walls (these use the existing nested sector wall rendering)
             foreach (var wall in sector.Walls)
             {
-                // Use actual wall texture color for nested sectors, just like independent sectors
-                var wallColor = GetTextureColor(sector.WallTexture);
-
                 // Draw nested sector walls as height transitions
-                DrawNestedSectorHeightTransitionWall(wall, sector, sector.WallTexture);
+                DrawNestedSectorHeightTransitionWall(wall, sector, sector.WallTexture, lightingColor);
             }
 
             // Draw sprites in this sector
@@ -7122,20 +7640,24 @@ namespace BuildEditor
 
         }
 
-        private void Draw3DSector(Sector sector, HashSet<int> renderedSectors, int depth)
+        private void Draw3DSector(Sector sector, HashSet<int> renderedSectors, int depth, GameTime gameTime)
         {
             if (renderedSectors.Contains(sector.Id) || depth > 5) // Prevent infinite recursion
                 return;
 
             renderedSectors.Add(sector.Id);
 
-            // Draw this sector's geometry only (sprites will be rendered later sorted by distance)
-            Draw3DFloorCeiling(sector);
+            // Get cached sector lighting
+            var lightingColor = GetCachedSectorLighting(sector);
 
-            var wallColor = GetTextureColor(sector.WallTexture);
+            // Draw this sector's geometry only (sprites will be rendered later sorted by distance)
+            Draw3DFloorCeiling(sector, lightingColor);
 
             foreach (var wall in sector.Walls)
             {
+                // Calculate per-wall lighting (Build Engine: walls can have shade offsets)
+                var wallLightingColor = CalculateWallLighting(sector, wall, gameTime);
+
                 // Handle two-sided walls (shared edges between sectors)
                 if (wall.IsTwoSided && wall.AdjacentSectorId.HasValue)
                 {
@@ -7143,39 +7665,39 @@ namespace BuildEditor
                     if (adjacentSector != null)
                     {
                         // Draw only the upper/lower wall sections where heights differ
-                        Draw3DTwoSidedWall(wall, sector, adjacentSector, sector.WallTexture);
-                        
+                        Draw3DTwoSidedWall(wall, sector, adjacentSector, sector.WallTexture, wallLightingColor);
+
                         // Recursively draw the adjacent sector so it's visible through the opening
                         // Only draw if we haven't already rendered it (to prevent infinite recursion)
                         if (!renderedSectors.Contains(adjacentSector.Id))
                         {
-                            Draw3DSector(adjacentSector, renderedSectors, depth + 1);
+                            Draw3DSector(adjacentSector, renderedSectors, depth + 1, gameTime);
                         }
                         continue;
                     }
                 }
-                
+
                 // For nested sectors, draw height transition walls instead of full walls
                 if (sector.IsNested)
                 {
-                    DrawNestedSectorHeightTransitionWall(wall, sector, sector.WallTexture);
+                    DrawNestedSectorHeightTransitionWall(wall, sector, sector.WallTexture, wallLightingColor);
                     continue;
                 }
-                
+
                 // Draw regular solid wall (with slope support)
                 if (sector.HasSlopes)
                 {
-                    Draw3DSlopedWall(wall.Start, wall.End, sector, sector.WallTexture);
+                    Draw3DSlopedWall(wall.Start, wall.End, sector, sector.WallTexture, wallLightingColor);
                 }
                 else
                 {
-                    Draw3DWall(wall.Start, wall.End, sector.FloorHeight, sector.CeilingHeight, sector.WallTexture);
+                    Draw3DWall(wall.Start, wall.End, sector.FloorHeight, sector.CeilingHeight, sector.WallTexture, wallLightingColor, sector);
                 }
             }
 
         }
 
-        private void Draw3DWall(Vector2 start, Vector2 end, float floorHeight, float ceilingHeight, string textureName)
+        private void Draw3DWall(Vector2 start, Vector2 end, float floorHeight, float ceilingHeight, string textureName, Color? lightingColor = null, Sector sector = null)
         {
             var texture = GetTexture(textureName);
             if (texture == null) return;
@@ -7187,7 +7709,29 @@ namespace BuildEditor
             float actualFloor = Math.Min(floorHeight, ceilingHeight);
             float actualCeiling = Math.Max(floorHeight, ceilingHeight);
 
+            // Calculate wall center for distance-based fog (Build Engine style)
+            Vector2 wallCenter2D = (start + end) / 2f;
+            float wallCenterHeight = (actualFloor + actualCeiling) / 2f;
+            Vector3 wallCenter3D = new Vector3(wallCenter2D.X, wallCenterHeight, -wallCenter2D.Y);
+            float distanceFromCamera = Vector3.Distance(_camera3DPosition, wallCenter3D);
+
+            // Save and set BasicEffect state
+            var originalDiffuseColor = _basicEffect.DiffuseColor;
             _basicEffect.Texture = texture;
+
+            // Apply lighting with visibility fog
+            if (lightingColor.HasValue)
+            {
+                var finalColor = lightingColor.Value;
+
+                // Apply Build Engine visibility fog if sector provided
+                if (sector != null && sector.Visibility > 0)
+                {
+                    finalColor = ApplyVisibilityFog(finalColor, distanceFromCamera, sector.Visibility);
+                }
+
+                _basicEffect.DiffuseColor = finalColor.ToVector3();
+            }
 
             // Set sampler state to enable texture wrapping/tiling
             GraphicsDevice.SamplerStates[0] = SamplerState.LinearWrap;
@@ -7219,9 +7763,12 @@ namespace BuildEditor
                 pass.Apply();
                 GraphicsDevice.DrawUserIndexedPrimitives(PrimitiveType.TriangleList, vertices, 0, 4, indices, 0, 2);
             }
+
+            // Restore original diffuse color
+            _basicEffect.DiffuseColor = originalDiffuseColor;
         }
 
-        private void Draw3DTwoSidedWall(Wall wall, Sector sectorA, Sector sectorB, string wallTexture)
+        private void Draw3DTwoSidedWall(Wall wall, Sector sectorA, Sector sectorB, string wallTexture, Color? lightingColor = null)
         {
             // For two-sided walls, only draw upper/lower textures where height differs
             // This follows Build Engine conventions
@@ -7236,7 +7783,7 @@ namespace BuildEditor
             {
                 float upperBottom = Math.Min(ceilingA, ceilingB);
                 float upperTop = Math.Max(ceilingA, ceilingB);
-                Draw3DWall(wall.Start, wall.End, upperBottom, upperTop, wallTexture);
+                Draw3DWall(wall.Start, wall.End, upperBottom, upperTop, wallTexture, lightingColor, sectorA);
             }
 
             // Draw lower wall section if there's a floor height difference
@@ -7244,14 +7791,14 @@ namespace BuildEditor
             {
                 float lowerBottom = Math.Min(floorA, floorB);
                 float lowerTop = Math.Max(floorA, floorB);
-                Draw3DWall(wall.Start, wall.End, lowerBottom, lowerTop, wallTexture);
+                Draw3DWall(wall.Start, wall.End, lowerBottom, lowerTop, wallTexture, lightingColor, sectorA);
             }
 
             // No middle section is drawn - this creates the opening effect
             // The adjacent sector will be drawn separately, making it visible through the opening
         }
 
-        private void DrawNestedSectorHeightTransitionWall(Wall wall, Sector nestedSector, string wallTexture)
+        private void DrawNestedSectorHeightTransitionWall(Wall wall, Sector nestedSector, string wallTexture, Color? lightingColor = null)
         {
             // First check if this wall borders another nested sector
             Sector adjacentSector = null;
@@ -7316,13 +7863,13 @@ namespace BuildEditor
             // Draw floor transition wall (from compare sector floor to nested floor)
             if (hasFloorDifference)
             {
-                Draw3DWall(wall.Start, wall.End, compareFloorHeight, nestedFloorHeight, wallTexture);
+                Draw3DWall(wall.Start, wall.End, compareFloorHeight, nestedFloorHeight, wallTexture, lightingColor, nestedSector);
             }
 
             // Draw ceiling transition wall (from nested ceiling to compare sector ceiling)
             if (hasCeilingDifference)
             {
-                Draw3DWall(wall.Start, wall.End, nestedCeilingHeight, compareCeilingHeight, wallTexture);
+                Draw3DWall(wall.Start, wall.End, nestedCeilingHeight, compareCeilingHeight, wallTexture, lightingColor, nestedSector);
             }
         }
 
@@ -7334,12 +7881,20 @@ namespace BuildEditor
             // For now, skip sloped walls to get basic texture rendering working
         }
 
-        private void Draw3DSlopedWall(Vector2 start, Vector2 end, Sector sector, string textureName)
+        private void Draw3DSlopedWall(Vector2 start, Vector2 end, Sector sector, string textureName, Color? lightingColor = null)
         {
             var texture = GetTexture(textureName);
             if (texture == null) return;
 
+            // Save and set BasicEffect state
+            var originalDiffuseColor = _basicEffect.DiffuseColor;
             _basicEffect.Texture = texture;
+
+            // Apply lighting
+            if (lightingColor.HasValue)
+            {
+                _basicEffect.DiffuseColor = lightingColor.Value.ToVector3();
+            }
 
             // Set sampler state to enable texture wrapping/tiling
             GraphicsDevice.SamplerStates[0] = SamplerState.LinearWrap;
@@ -7386,14 +7941,14 @@ namespace BuildEditor
                 pass.Apply();
                 GraphicsDevice.DrawUserIndexedPrimitives(PrimitiveType.TriangleList, vertices, 0, 4, indices, 0, 2);
             }
+
+            // Restore original diffuse color
+            _basicEffect.DiffuseColor = originalDiffuseColor;
         }
 
-        private void Draw3DFloorCeiling(Sector sector)
+        private void Draw3DFloorCeiling(Sector sector, Color lightingColor)
         {
             if (sector.Vertices.Count < 3) return;
-
-            var floorColor = GetTextureColor(sector.FloorTexture);
-            var ceilingColor = GetTextureColor(sector.CeilingTexture);
 
             // Get triangles with holes cut out for nested sectors
             var triangles = TriangulateSectorWithHoles(sector);
@@ -7404,26 +7959,23 @@ namespace BuildEditor
                 if (sector.HasSlopes)
                 {
                     // Draw sloped floor and ceiling using per-vertex heights
-                    Draw3DSlopedTriangle(triangle[0], triangle[1], triangle[2], sector, true, sector.FloorTexture); // Floor
+                    Draw3DSlopedTriangle(triangle[0], triangle[1], triangle[2], sector, true, sector.FloorTexture, lightingColor); // Floor
                     Draw3DSlopedTriangle(triangle[2], triangle[1], triangle[0], sector, false,
-                        sector.CeilingTexture); // Ceiling (reverse winding)
+                        sector.CeilingTexture, lightingColor); // Ceiling (reverse winding)
                 }
                 else
                 {
                     // Draw flat floor and ceiling
                     float animatedFloorHeight = sector.FloorHeight + sector.AnimationHeightOffset;
-                    Draw3DTriangle(triangle[0], triangle[1], triangle[2], animatedFloorHeight, sector.FloorTexture);
-                    Draw3DTriangle(triangle[2], triangle[1], triangle[0], sector.CeilingHeight, sector.CeilingTexture);
+                    Draw3DTriangle(triangle[0], triangle[1], triangle[2], animatedFloorHeight, sector.FloorTexture, lightingColor, sector);
+                    Draw3DTriangle(triangle[2], triangle[1], triangle[0], sector.CeilingHeight, sector.CeilingTexture, lightingColor, sector);
                 }
             }
         }
 
-        private void Draw3DNestedFloorCeiling(Sector sector)
+        private void Draw3DNestedFloorCeiling(Sector sector, Color lightingColor)
         {
             if (sector.Vertices.Count < 3) return;
-
-            var floorColor = GetTextureColor(sector.FloorTexture);
-            var ceilingColor = GetTextureColor(sector.CeilingTexture);
 
             // Triangulate the sector polygon for floor and ceiling
             var triangles = TriangulateSector(sector.Vertices);
@@ -7438,29 +7990,30 @@ namespace BuildEditor
                 {
                     // Draw sloped floor and ceiling using per-vertex heights with offset
                     Draw3DNestedSlopedTriangle(triangle[0], triangle[1], triangle[2], sector, true, sector.FloorTexture,
-                        heightOffset); // Floor
+                        heightOffset, lightingColor); // Floor
                     Draw3DNestedSlopedTriangle(triangle[2], triangle[1], triangle[0], sector, false, sector.CeilingTexture,
-                        -heightOffset); // Ceiling (reverse winding, negative offset)
+                        -heightOffset, lightingColor); // Ceiling (reverse winding, negative offset)
                 }
                 else
                 {
                     // Draw flat floor and ceiling with height offset
                     float animatedFloorHeight = sector.FloorHeight + sector.AnimationHeightOffset + heightOffset;
                     float ceilingHeight = sector.CeilingHeight - heightOffset;
-                    Draw3DTriangle(triangle[0], triangle[1], triangle[2], animatedFloorHeight, sector.FloorTexture);
-                    Draw3DTriangle(triangle[2], triangle[1], triangle[0], ceilingHeight, sector.CeilingTexture);
+                    Draw3DTriangle(triangle[0], triangle[1], triangle[2], animatedFloorHeight, sector.FloorTexture, lightingColor, sector);
+                    Draw3DTriangle(triangle[2], triangle[1], triangle[0], ceilingHeight, sector.CeilingTexture, lightingColor, sector);
                 }
             }
         }
 
         private void Draw3DNestedSlopedTriangle(Vector2 v1, Vector2 v2, Vector2 v3, Sector sector, bool isFloor,
-            string textureName, float heightOffset)
+            string textureName, float heightOffset, Color? lightingColor = null)
         {
             var texture = GetTexture(textureName);
             if (texture == null) return;
 
+            // Save and set BasicEffect state
+            var originalDiffuseColor = _basicEffect.DiffuseColor;
             _basicEffect.Texture = texture;
-            GraphicsDevice.SamplerStates[0] = SamplerState.LinearWrap;
 
             // Find vertex indices
             int v1Index = sector.Vertices.IndexOf(v1);
@@ -7471,6 +8024,25 @@ namespace BuildEditor
             float h1 = GetVertexHeight(sector, v1Index, isFloor) + heightOffset;
             float h2 = GetVertexHeight(sector, v2Index, isFloor) + heightOffset;
             float h3 = GetVertexHeight(sector, v3Index, isFloor) + heightOffset;
+
+            // Calculate triangle center for distance-based fog
+            Vector2 center2D = (v1 + v2 + v3) / 3f;
+            float centerHeight = (h1 + h2 + h3) / 3f;
+            Vector3 center3D = new Vector3(center2D.X, centerHeight, -center2D.Y);
+            float distanceFromCamera = Vector3.Distance(_camera3DPosition, center3D);
+
+            // Apply sector lighting with Build Engine visibility fog
+            if (lightingColor.HasValue)
+            {
+                var finalColor = lightingColor.Value;
+                if (sector.Visibility > 0)
+                {
+                    finalColor = ApplyVisibilityFog(finalColor, distanceFromCamera, sector.Visibility);
+                }
+                _basicEffect.DiffuseColor = finalColor.ToVector3();
+            }
+
+            GraphicsDevice.SamplerStates[0] = SamplerState.LinearWrap;
 
             // Calculate UV coordinates based on world position for tiling with configurable scale
             float textureWorldSize = TextureScaleSettings.GetFloorCeilingTextureScale(textureName, isFloor);
@@ -7490,6 +8062,9 @@ namespace BuildEditor
                 pass.Apply();
                 GraphicsDevice.DrawUserIndexedPrimitives(PrimitiveType.TriangleList, vertices, 0, 3, indices, 0, 1);
             }
+
+            // Restore original diffuse color
+            _basicEffect.DiffuseColor = originalDiffuseColor;
         }
 
         private bool IsTriangleInsideNestedSector(Vector2[] triangle, Sector parentSector)
@@ -7807,27 +8382,43 @@ namespace BuildEditor
             return a.X * b.Y - a.Y * b.X;
         }
 
-        private void Draw3DTriangle(Vector2 v1, Vector2 v2, Vector2 v3, float height, string textureName)
+        private void Draw3DTriangle(Vector2 v1, Vector2 v2, Vector2 v3, float height, string textureName, Color? lightingColor = null, Sector sector = null)
         {
             var texture = GetTexture(textureName);
             if (texture == null) return;
 
+            // Save and set BasicEffect state
+            var originalDiffuseColor = _basicEffect.DiffuseColor;
             _basicEffect.Texture = texture;
+
+            // Calculate triangle center for distance-based fog
+            Vector2 center2D = (v1 + v2 + v3) / 3f;
+            Vector3 center3D = new Vector3(center2D.X, height, -center2D.Y);
+            float distanceFromCamera = Vector3.Distance(_camera3DPosition, center3D);
+
+            // Apply sector lighting with Build Engine visibility fog
+            if (lightingColor.HasValue)
+            {
+                var finalColor = lightingColor.Value;
+                if (sector != null && sector.Visibility > 0)
+                {
+                    finalColor = ApplyVisibilityFog(finalColor, distanceFromCamera, sector.Visibility);
+                }
+                _basicEffect.DiffuseColor = finalColor.ToVector3();
+            }
 
             // Set sampler state to enable texture wrapping/tiling
             GraphicsDevice.SamplerStates[0] = SamplerState.LinearWrap;
 
-            var vertices = new VertexPositionTexture[3];
-
             // For floor/ceiling textures, map world coordinates directly to UV coordinates
-            // This creates a flat, tiled surface like Build engine
-            float textureWorldSize = TextureScaleSettings.GetFloorCeilingTextureScale(textureName, true); // Generic triangle, assume floor
-            
+            float textureWorldSize = TextureScaleSettings.GetFloorCeilingTextureScale(textureName, true);
+
             // Calculate UV coordinates based on world position
             Vector2 uv1 = new Vector2(v1.X / textureWorldSize, v1.Y / textureWorldSize);
-            Vector2 uv2 = new Vector2(v2.X / textureWorldSize, v2.Y / textureWorldSize);  
+            Vector2 uv2 = new Vector2(v2.X / textureWorldSize, v2.Y / textureWorldSize);
             Vector2 uv3 = new Vector2(v3.X / textureWorldSize, v3.Y / textureWorldSize);
 
+            var vertices = new VertexPositionTexture[3];
             vertices[0] = new VertexPositionTexture(new Vector3(v1.X, height, -v1.Y), uv1);
             vertices[1] = new VertexPositionTexture(new Vector3(v2.X, height, -v2.Y), uv2);
             vertices[2] = new VertexPositionTexture(new Vector3(v3.X, height, -v3.Y), uv3);
@@ -7839,33 +8430,52 @@ namespace BuildEditor
                 pass.Apply();
                 GraphicsDevice.DrawUserIndexedPrimitives(PrimitiveType.TriangleList, vertices, 0, 3, indices, 0, 1);
             }
+
+            // Restore original diffuse color
+            _basicEffect.DiffuseColor = originalDiffuseColor;
         }
 
-        private void Draw3DSlopedTriangle(Vector2 v1, Vector2 v2, Vector2 v3, Sector sector, bool isFloor, string textureName)
+        private void Draw3DSlopedTriangle(Vector2 v1, Vector2 v2, Vector2 v3, Sector sector, bool isFloor, string textureName, Color? lightingColor = null)
         {
             var texture = GetTexture(textureName);
             if (texture == null) return;
 
+            // Save and set BasicEffect state
+            var originalDiffuseColor = _basicEffect.DiffuseColor;
             _basicEffect.Texture = texture;
-            GraphicsDevice.SamplerStates[0] = SamplerState.LinearWrap;
 
-            // Get vertex indices in the sector
+            // Get vertex heights
             int v1Index = sector.Vertices.IndexOf(v1);
             int v2Index = sector.Vertices.IndexOf(v2);
             int v3Index = sector.Vertices.IndexOf(v3);
-
-            // Get heights for each vertex
             float h1 = GetVertexHeight(sector, v1Index, isFloor);
             float h2 = GetVertexHeight(sector, v2Index, isFloor);
             float h3 = GetVertexHeight(sector, v3Index, isFloor);
-
-            // Apply animation offset to floor
             if (isFloor)
             {
                 h1 += sector.AnimationHeightOffset;
                 h2 += sector.AnimationHeightOffset;
                 h3 += sector.AnimationHeightOffset;
             }
+
+            // Calculate triangle center for distance-based fog
+            Vector2 center2D = (v1 + v2 + v3) / 3f;
+            float centerHeight = (h1 + h2 + h3) / 3f;
+            Vector3 center3D = new Vector3(center2D.X, centerHeight, -center2D.Y);
+            float distanceFromCamera = Vector3.Distance(_camera3DPosition, center3D);
+
+            // Apply sector lighting with Build Engine visibility fog
+            if (lightingColor.HasValue)
+            {
+                var finalColor = lightingColor.Value;
+                if (sector.Visibility > 0)
+                {
+                    finalColor = ApplyVisibilityFog(finalColor, distanceFromCamera, sector.Visibility);
+                }
+                _basicEffect.DiffuseColor = finalColor.ToVector3();
+            }
+
+            GraphicsDevice.SamplerStates[0] = SamplerState.LinearWrap;
 
             // Calculate UV coordinates based on world position for tiling with configurable scale
             float textureWorldSize = TextureScaleSettings.GetFloorCeilingTextureScale(textureName, isFloor);
@@ -7885,6 +8495,9 @@ namespace BuildEditor
                 pass.Apply();
                 GraphicsDevice.DrawUserIndexedPrimitives(PrimitiveType.TriangleList, vertices, 0, 3, indices, 0, 1);
             }
+
+            // Restore original diffuse color
+            _basicEffect.DiffuseColor = originalDiffuseColor;
         }
 
 
@@ -7934,12 +8547,22 @@ namespace BuildEditor
                     break;
             }
 
+            // Get sector lighting
+            var lightingColor = GetCachedSectorLighting(sector);
+
+            // Apply visibility fog to sprite based on distance
+            if (sector.Visibility > 0)
+            {
+                float distanceFromCamera = Vector3.Distance(_camera3DPosition, spritePosition);
+                lightingColor = ApplyVisibilityFog(lightingColor, distanceFromCamera, sector.Visibility);
+            }
+
             // Draw sprite as a textured billboard quad with yaw and pitch rotation
             var pitch = sprite.Properties.ContainsKey("Pitch") ? (float)sprite.Properties["Pitch"] : 0f;
 
             if (spriteTexture != null)
             {
-                DrawTexturedSpriteBillboard(spritePosition, spriteSize, spriteTexture, sprite.Alignment, sprite.Angle, pitch);
+                DrawTexturedSpriteBillboard(spritePosition, spriteSize, spriteTexture, sprite.Alignment, sprite.Angle, pitch, lightingColor);
             }
             else
             {
@@ -8054,7 +8677,7 @@ namespace BuildEditor
         }
 
         private void DrawTexturedSpriteBillboard(Vector3 position, float size, Texture2D texture, SpriteAlignment alignment,
-            float yaw = 0f, float pitch = 0f)
+            float yaw = 0f, float pitch = 0f, Color? lightingColor = null)
         {
             Vector3 cameraToSprite = position - _camera3DPosition;
             Vector3 right, up;
@@ -8146,12 +8769,19 @@ namespace BuildEditor
             // Save original BasicEffect state
             var originalTexture = _basicEffect.Texture;
             var originalTextureEnabled = _basicEffect.TextureEnabled;
+            var originalDiffuseColor = _basicEffect.DiffuseColor;
             var originalBlendState = GraphicsDevice.BlendState;
             var originalDepthStencilState = GraphicsDevice.DepthStencilState;
 
             // Set texture on basic effect
             _basicEffect.Texture = texture;
             _basicEffect.TextureEnabled = true;
+
+            // Apply sector lighting
+            if (lightingColor.HasValue)
+            {
+                _basicEffect.DiffuseColor = lightingColor.Value.ToVector3();
+            }
 
             // Enable alpha blending for sprite transparency
             GraphicsDevice.BlendState = BlendState.AlphaBlend;
@@ -8186,6 +8816,7 @@ namespace BuildEditor
             GraphicsDevice.RasterizerState = originalRasterizerState;
             _basicEffect.Texture = originalTexture;
             _basicEffect.TextureEnabled = originalTextureEnabled;
+            _basicEffect.DiffuseColor = originalDiffuseColor;
         }
 
         private bool IsPointInSector(Vector2 point, Sector sector)
@@ -8550,13 +9181,17 @@ namespace BuildEditor
             // Just force a visual refresh
         }
 
-        private Color GetWallColorForSector(Sector sector)
+        private Color GetWallColorForSector(Sector sector, GameTime gameTime)
         {
+            Color baseColor;
             if (!sector.IsNested)
-                return Color.White; // Independent sectors use white walls
+                baseColor = Color.White; // Independent sectors use white walls
+            else
+                baseColor = Color.Cyan; // Nested sectors use cyan color
 
-            // Nested sectors use cyan color
-            return Color.Cyan;
+            // Apply lighting effects to the 2D walls for immediate visual feedback
+            var lightingColor = CalculateSectorLighting(sector, gameTime);
+            return MultiplyColors(baseColor, lightingColor);
         }
 
         // ================== SAVE/LOAD SYSTEM ==================
@@ -8694,7 +9329,9 @@ namespace BuildEditor
         {
             _sectors.Clear();
             _selectedSector = null;
+            _lightingEditorVisible = false;
             _selectedWall = null;
+            _wallEditorVisible = false;
             _selectedSprite = null;
             _playerPosition = Vector2.Zero;
             _hasPlayerPosition = false;
@@ -9167,6 +9804,45 @@ namespace BuildEditor
         public float CeilingShading { get; set; } = 1f;
         public float WallShading { get; set; } = 1f;
 
+        // ============ BUILD ENGINE STYLE LIGHTING SYSTEM ============
+        // The Build Engine uses a shade-based lighting system where lighting is stored
+        // per-sector, not computed dynamically. This is authentic to Duke Nukem 3D, Blood, Shadow Warrior.
+        //
+        // SHADE: Integer 0-63, where 0 = full brightness, 63 = completely dark
+        //   - Acts like a palette lookup table offset
+        //   - Can be animated for flickering lights, strobes, etc.
+        //   - Each sector has a base shade that affects all geometry within it
+        //
+        // VISIBILITY: Distance fog/fade effect
+        //   - 0 = no fog, higher values = surfaces fade to black more quickly with distance
+        //   - Simulates atmospheric depth and "foggy" sectors
+        //
+        // WALLS: Can override or offset sector shade
+        //   - wall.Shade is an offset added to sector.Shade (typically -16 to +16)
+        //   - wall.OverrideShade = true makes the wall use its own shade completely
+        //   - Allows darker/lighter wall panels, glowing surfaces, etc.
+        //
+        // DYNAMIC EFFECTS: Change shade value over time for:
+        //   - Light switches: toggle shade between 0 (bright) and 15-30 (dark)
+        //   - Flickering: oscillate shade with noise/sine patterns
+        //   - Pulsing: smooth sine wave brightness changes
+        //   - Sector-based "lights" are just bright sectors (shade=0) surrounded by dark ones
+        // ============================================================
+
+        public int Shade { get; set; } = 0; // Build Engine shade value (0 = bright, 63 = dark)
+        public int Visibility { get; set; } = 0; // Distance fog/fade (0 = no fog, higher = more fog)
+        public Color LightColor { get; set; } = Color.White; // Tint color for colored lighting (optional extension)
+        public bool HasColoredLighting { get; set; } = false; // Enable tinted lighting (optional extension)
+        public LightingMode LightingMode { get; set; } = LightingMode.Normal; // Dynamic effects: Normal, Strobe, Flicker, etc.
+
+        // Legacy compatibility
+        [Obsolete("Use Shade instead")]
+        public int LightLevel
+        {
+            get => Shade;
+            set => Shade = value;
+        }
+
         public Sector(int id)
         {
             Id = id;
@@ -9179,14 +9855,27 @@ namespace BuildEditor
         public Vector2 End { get; set; }
         public bool IsTwoSided { get; set; } = false;
         public int? AdjacentSectorId { get; set; }
+
+        // Build Engine style per-wall shading
+        public int Shade { get; set; } = 0; // Shade offset from sector shade (-128 to 127, typically -16 to 16)
+        public bool OverrideShade { get; set; } = false; // If true, use wall shade instead of sector shade
     }
 
     public enum LiftState
     {
         AtBottom, // Lift is at lowest position
-        Rising, // Lift is moving up  
+        Rising, // Lift is moving up
         AtTop, // Lift is at highest position
         Lowering // Lift is moving down
+    }
+
+    public enum LightingMode
+    {
+        Normal, // Static lighting
+        Strobe, // On/off flashing
+        Flicker, // Random intensity variation
+        Pulse, // Smooth sine wave brightness
+        ColorCycle // Cycle through colors
     }
 
     // Level data container for save/load functionality
